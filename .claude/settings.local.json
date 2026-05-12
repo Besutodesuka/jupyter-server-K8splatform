@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(chmod +x /Users/rapepong/Development/jupyter-server-K8splatform/provisioning/experiment/run.sh)",
+      "Bash(rtk ls *)"
+    ]
+  }
+}

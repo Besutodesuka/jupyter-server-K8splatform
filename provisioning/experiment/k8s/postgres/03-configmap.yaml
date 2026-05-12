@@ -1,0 +1,97 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init-sql
+  namespace: jupyter-experiment
+data:
+  01-schema.sql: |
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+    CREATE TABLE IF NOT EXISTS departments (
+        department_id SERIAL PRIMARY KEY,
+        name          VARCHAR(100) NOT NULL UNIQUE,
+        code          VARCHAR(10)  NOT NULL UNIQUE,
+        faculty       VARCHAR(100)
+    );
+
+    CREATE TABLE IF NOT EXISTS instructors (
+        instructor_id SERIAL PRIMARY KEY,
+        first_name    VARCHAR(50)  NOT NULL,
+        last_name     VARCHAR(50)  NOT NULL,
+        email         VARCHAR(100) NOT NULL UNIQUE,
+        department_id INT REFERENCES departments(department_id),
+        title         VARCHAR(50)
+    );
+
+    CREATE TABLE IF NOT EXISTS students (
+        student_id    SERIAL PRIMARY KEY,
+        uuid          UUID DEFAULT uuid_generate_v4() UNIQUE,
+        first_name    VARCHAR(50)  NOT NULL,
+        last_name     VARCHAR(50)  NOT NULL,
+        email         VARCHAR(100) NOT NULL UNIQUE,
+        date_of_birth DATE,
+        enrollment_date DATE NOT NULL,
+        department_id INT REFERENCES departments(department_id),
+        year_level    SMALLINT CHECK (year_level BETWEEN 1 AND 6),
+        gpa           NUMERIC(3,2) CHECK (gpa BETWEEN 0 AND 4),
+        status        VARCHAR(20)  DEFAULT 'active'
+                        CHECK (status IN ('active','suspended','graduated','withdrawn'))
+    );
+
+    CREATE TABLE IF NOT EXISTS courses (
+        course_id     SERIAL PRIMARY KEY,
+        course_code   VARCHAR(20)  NOT NULL UNIQUE,
+        course_name   VARCHAR(200) NOT NULL,
+        department_id INT REFERENCES departments(department_id),
+        credits       SMALLINT CHECK (credits BETWEEN 1 AND 6),
+        instructor_id INT REFERENCES instructors(instructor_id),
+        max_students  INT DEFAULT 40,
+        description   TEXT,
+        semester      VARCHAR(20),
+        academic_year INT
+    );
+
+    CREATE TABLE IF NOT EXISTS enrollments (
+        enrollment_id SERIAL PRIMARY KEY,
+        student_id    INT REFERENCES students(student_id) ON DELETE CASCADE,
+        course_id     INT REFERENCES courses(course_id)  ON DELETE CASCADE,
+        enrolled_at   TIMESTAMP DEFAULT NOW(),
+        final_grade   CHAR(2),
+        final_score   NUMERIC(5,2) CHECK (final_score BETWEEN 0 AND 100),
+        status        VARCHAR(20) DEFAULT 'enrolled'
+                        CHECK (status IN ('enrolled','dropped','completed','failed')),
+        UNIQUE(student_id, course_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS assignments (
+        assignment_id SERIAL PRIMARY KEY,
+        course_id     INT REFERENCES courses(course_id) ON DELETE CASCADE,
+        title         VARCHAR(200) NOT NULL,
+        description   TEXT,
+        type          VARCHAR(50) CHECK (type IN ('homework','quiz','midterm','final','project','lab')),
+        due_date      TIMESTAMP,
+        max_score     NUMERIC(5,2) DEFAULT 100,
+        weight        NUMERIC(4,2) CHECK (weight BETWEEN 0 AND 100),
+        created_at    TIMESTAMP DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS submissions (
+        submission_id      SERIAL PRIMARY KEY,
+        enrollment_id      INT REFERENCES enrollments(enrollment_id) ON DELETE CASCADE,
+        assignment_id      INT REFERENCES assignments(assignment_id) ON DELETE CASCADE,
+        submitted_at       TIMESTAMP,
+        score              NUMERIC(5,2) CHECK (score >= 0),
+        max_score_snapshot NUMERIC(5,2),
+        feedback           TEXT,
+        is_late            BOOLEAN  DEFAULT FALSE,
+        attempt_number     SMALLINT DEFAULT 1,
+        UNIQUE(enrollment_id, assignment_id, attempt_number)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_enrollments_student    ON enrollments(student_id);
+    CREATE INDEX IF NOT EXISTS idx_enrollments_course     ON enrollments(course_id);
+    CREATE INDEX IF NOT EXISTS idx_submissions_enrollment ON submissions(enrollment_id);
+    CREATE INDEX IF NOT EXISTS idx_submissions_assignment ON submissions(assignment_id);
+    CREATE INDEX IF NOT EXISTS idx_submissions_submitted  ON submissions(submitted_at);
+    CREATE INDEX IF NOT EXISTS idx_students_dept          ON students(department_id);
+    CREATE INDEX IF NOT EXISTS idx_courses_dept           ON courses(department_id);

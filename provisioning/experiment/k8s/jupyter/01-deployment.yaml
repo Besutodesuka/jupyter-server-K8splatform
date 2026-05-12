@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jupyter
+  namespace: jupyter-experiment
+  labels:
+    app: jupyter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jupyter
+  template:
+    metadata:
+      labels:
+        app: jupyter
+    spec:
+      containers:
+        - name: jupyter
+          # scipy-notebook ships Python 3.10 + pandas, numpy, matplotlib, scipy
+          image: quay.io/jupyter/scipy-notebook:python-3.10
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              pip install psycopg2-binary sqlalchemy psutil --quiet && \
+              jupyter lab \
+                --ip=0.0.0.0 \
+                --port=8888 \
+                --no-browser \
+                --ServerApp.token='' \
+                --ServerApp.password='' \
+                --ServerApp.allow_origin='*'
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: DATABASE_URL
+            - name: JUPYTER_ENABLE_LAB
+              value: "yes"
+          ports:
+            - containerPort: 8888
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "4000m"   # raise/lower to tune CPU hard limit
+              memory: "4Gi"  # raise/lower to tune RAM hard limit
+          readinessProbe:
+            httpGet:
+              path: /lab
+              port: 8888
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 10
+          livenessProbe:
+            httpGet:
+              path: /lab
+              port: 8888
+            initialDelaySeconds: 60
+            periodSeconds: 15
