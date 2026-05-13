@@ -42,8 +42,8 @@ GRADE_MAP = [(90,"A+"),(85,"A"),(80,"A-"),(75,"B+"),(70,"B"),(65,"B-"),(60,"C+")
 N_STUDENTS    = 2_000
 N_INSTRUCTORS = 50
 N_COURSES     = 200
-AVG_ENROLL    = 5    # enrollments per student
-AVG_ASSIGN    = 5    # assignments per course
+AVG_ENROLL    = 8    # enrollments per student  (2000×8=~16k enrollments)
+AVG_ASSIGN    = 8    # assignments per course   (200×8=~1600 assignments → ~112k subs possible)
 TARGET_SUBS   = 100_000
 BATCH         = 1_000
 
@@ -203,6 +203,30 @@ def seed_assignments(cur, conn, course_ids):
     return ids
 
 
+def _flush(cur, conn, batch: list, total: int) -> int:
+    execute_values(cur, """
+        INSERT INTO submissions
+            (enrollment_id, assignment_id, submitted_at, score,
+             max_score_snapshot, feedback, is_late, attempt_number)
+        VALUES %s ON CONFLICT DO NOTHING
+    """, batch)
+    conn.commit()
+    print(f"  {total:>7,} / {TARGET_SUBS:,} submissions", end="\r")
+    return 0  # returns new batch length
+
+
+def _make_row(eid, aid, ms, attempt):
+    score = round(random.betavariate(5, 2) * ms, 2)
+    return (
+        eid, aid,
+        fake.date_time_between(start_date="-1y", end_date="now"),
+        score, ms,
+        fake.sentence() if random.random() < 0.3 else None,
+        random.random() < 0.1,
+        attempt,
+    )
+
+
 def seed_submissions(cur, conn, enroll_ids):
     cur.execute("SELECT assignment_id, course_id, max_score FROM assignments")
     assign_info = {r[0]: (r[1], float(r[2])) for r in cur.fetchall()}
@@ -214,8 +238,9 @@ def seed_submissions(cur, conn, enroll_ids):
     for aid, (cid, ms) in assign_info.items():
         course_assigns.setdefault(cid, []).append((aid, ms))
 
-    seen = set()
-    batch = []
+    # ── pass 1: organic submissions (attempt 1) ──────────────────────────────
+    attempt_tracker: dict[tuple, int] = {}  # (eid, aid) → max attempt used
+    batch: list = []
     total = 0
 
     for eid in enroll_ids:
@@ -225,46 +250,52 @@ def seed_submissions(cur, conn, enroll_ids):
         assigns = course_assigns.get(cid, [])
         if not assigns:
             continue
-
         n_submit = max(1, round(random.gauss(len(assigns) * 0.85, 1)))
         for aid, ms in random.sample(assigns, min(n_submit, len(assigns))):
             if total >= TARGET_SUBS:
                 break
             key = (eid, aid)
-            if key in seen:
-                continue
-            seen.add(key)
-
-            score = round(random.betavariate(5, 2) * ms, 2)
-            batch.append((
-                eid, aid,
-                fake.date_time_between(start_date="-1y", end_date="now"),
-                score, ms,
-                fake.sentence() if random.random() < 0.3 else None,
-                random.random() < 0.1,
-                1,
-            ))
+            attempt_tracker[key] = 1
+            batch.append(_make_row(eid, aid, ms, 1))
             total += 1
-
             if len(batch) >= BATCH:
-                execute_values(cur, """
-                    INSERT INTO submissions
-                        (enrollment_id, assignment_id, submitted_at, score,
-                         max_score_snapshot, feedback, is_late, attempt_number)
-                    VALUES %s ON CONFLICT DO NOTHING
-                """, batch)
-                conn.commit()
-                print(f"  {total:>7,} / {TARGET_SUBS:,} submissions", end="\r")
+                _flush(cur, conn, batch, total)
                 batch = []
 
     if batch:
-        execute_values(cur, """
-            INSERT INTO submissions
-                (enrollment_id, assignment_id, submitted_at, score,
-                 max_score_snapshot, feedback, is_late, attempt_number)
-            VALUES %s ON CONFLICT DO NOTHING
-        """, batch)
-        conn.commit()
+        _flush(cur, conn, batch, total)
+        batch = []
+
+    # ── pass 2: top-up — re-submit with attempt+1 until 100k guaranteed ─────
+    if total < TARGET_SUBS:
+        print(f"\n  Pass 1 yielded {total:,}. Topping up to {TARGET_SUBS:,} ...")
+
+        # Build flat pool of all valid (eid, aid, ms) pairs
+        pool = []
+        for eid in enroll_ids:
+            cid = enroll_course.get(eid)
+            for aid, ms in course_assigns.get(cid, []):
+                pool.append((eid, aid, ms))
+
+        if not pool:
+            print("  WARNING: no valid enrollment+assignment pairs for top-up")
+            return total
+
+        pool_idx = 0
+        while total < TARGET_SUBS:
+            eid, aid, ms = pool[pool_idx % len(pool)]
+            key = (eid, aid)
+            attempt = attempt_tracker.get(key, 0) + 1
+            attempt_tracker[key] = attempt
+            batch.append(_make_row(eid, aid, ms, attempt))
+            total += 1
+            pool_idx += 1
+            if len(batch) >= BATCH:
+                _flush(cur, conn, batch, total)
+                batch = []
+
+        if batch:
+            _flush(cur, conn, batch, total)
 
     return total
 
@@ -322,15 +353,13 @@ def main():
     total = seed_submissions(cur, conn, enroll_ids)
     print(f"\n  {total:,} submissions inserted")
 
-    # Row counts
-    cur.execute("""
-        SELECT relname, n_live_tup
-        FROM pg_stat_user_tables
-        ORDER BY n_live_tup DESC
-    """)
-    print("\nRow counts (from pg_stat):")
-    for row in cur.fetchall():
-        print(f"  {row[0]:<25} {row[1]:>10,}")
+    # Row counts — use COUNT(*) not pg_stat (n_live_tup is stale until autovacuum)
+    tables = ["departments", "instructors", "students", "courses",
+              "enrollments", "assignments", "submissions"]
+    print("\nRow counts:")
+    for t in tables:
+        cur.execute(f"SELECT COUNT(*) FROM {t}")
+        print(f"  {t:<25} {cur.fetchone()[0]:>10,}")
 
     cur.close()
     conn.close()

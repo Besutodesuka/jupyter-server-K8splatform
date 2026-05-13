@@ -16,7 +16,9 @@
       "Bash(minikube image *)",
       "Bash(echo \"loading in background PID $!\")",
       "Bash(kubectl set image *)",
-      "Bash(kubectl rollout *)"
+      "Bash(kubectl rollout *)",
+      "Bash(rtk grep *)",
+      "Bash(kubectl exec *)"
     ]
   }
 }

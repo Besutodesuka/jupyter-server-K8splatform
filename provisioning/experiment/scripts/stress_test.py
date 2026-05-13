@@ -54,30 +54,35 @@ def _conn():
 
 
 def measure(label: str):
-    """Decorator / context manager that records elapsed time + RSS delta."""
+    """Context manager: records elapsed time, RSS delta, and avg CPU% per phase."""
     class _Ctx:
         def __enter__(self):
             self._proc = psutil.Process()
             self._t0   = time.perf_counter()
             self._mem0 = self._proc.memory_info().rss / 1024 / 1024
+            # prime cpu_percent so first call returns meaningful value
+            self._proc.cpu_percent(interval=None)
             return self
 
         def __exit__(self, *_):
-            elapsed = time.perf_counter() - self._t0
-            mem1    = self._proc.memory_info().rss / 1024 / 1024
+            elapsed  = time.perf_counter() - self._t0
+            mem1     = self._proc.memory_info().rss / 1024 / 1024
+            cpu_pct  = self._proc.cpu_percent(interval=None)
             rec = {
-                "label":       label,
-                "elapsed_s":   round(elapsed, 3),
+                "label":        label,
+                "elapsed_s":    round(elapsed, 3),
                 "mem_start_mb": round(self._mem0, 1),
                 "mem_end_mb":   round(mem1, 1),
                 "mem_delta_mb": round(mem1 - self._mem0, 1),
+                "cpu_pct":      round(cpu_pct, 1),
             }
             RESULTS.append(rec)
             print(
                 f"  [{label}]  {elapsed:.3f}s  |  "
-                f"RAM {self._mem0:.0f}→{mem1:.0f} MB  (Δ{mem1-self._mem0:+.1f})"
+                f"RAM {self._mem0:.0f}→{mem1:.0f} MB  (Δ{mem1-self._mem0:+.1f})  |  "
+                f"CPU {cpu_pct:.1f}%"
             )
-            return False  # don't suppress exceptions
+            return False
     return _Ctx()
 
 
@@ -158,7 +163,7 @@ def run_db_scenarios(conn):
             JOIN   submissions s ON a.assignment_id = s.assignment_id
             GROUP  BY a.assignment_id, a.title, a.type, a.max_score
             HAVING COUNT(s.submission_id) > 5
-            ORDER  BY avg_raw / NULLIF(a.max_score,0) ASC
+            ORDER  BY AVG(s.score) / NULLIF(a.max_score,0) ASC
             LIMIT  50
         """)
         cur.fetchall()
@@ -257,7 +262,7 @@ def run_pandas_scenarios(conn) -> pd.DataFrame:
 
 def run_numpy_scenarios(df: pd.DataFrame):
     print("\n=== NUMPY ===")
-    scores = df["score_pct"].fillna(50).values
+    scores = df["score_pct"].fillna(50).to_numpy(dtype=np.float64)
 
     with measure("numpy_matmul_1000x1000"):
         A = np.random.randn(1_000, 1_000).astype(np.float64)
@@ -268,7 +273,8 @@ def run_numpy_scenarios(df: pd.DataFrame):
         _ = np.fft.fft(scores)
 
     with measure("numpy_svd_500x200"):
-        M = scores[:100_000].reshape(500, 200)
+        n = (min(len(scores), 100_000) // 200) * 200
+        M = scores[:n].reshape(-1, 200)
         _ = np.linalg.svd(M, full_matrices=False)
 
     with measure("numpy_eig_500x500"):
@@ -310,7 +316,8 @@ def run_matplotlib_scenarios(df: pd.DataFrame):
         axes[0, 2].set_title("Assignment Types")
 
         # 4. GPA vs score scatter (sample 5k)
-        sample = df.dropna(subset=["gpa", "score_pct"]).sample(5_000, random_state=0)
+        _pool  = df.dropna(subset=["gpa", "score_pct"])
+        sample = _pool.sample(min(5_000, len(_pool)), random_state=0)
         axes[1, 0].scatter(sample["gpa"], sample["score_pct"],
                            alpha=0.2, s=4, color="teal")
         axes[1, 0].set_title("GPA vs Score")
@@ -344,18 +351,28 @@ def run_matplotlib_scenarios(df: pd.DataFrame):
 # ── summary ───────────────────────────────────────────────────────────────────
 
 def print_summary():
-    print("\n" + "=" * 65)
-    print(f"{'Operation':<38} {'Time(s)':>8} {'MemΔ(MB)':>10}")
-    print("-" * 65)
+    print("\n" + "=" * 75)
+    print(f"{'Operation':<38} {'Time(s)':>8} {'MemΔ(MB)':>10} {'CPU%':>8}")
+    print("-" * 75)
     for r in RESULTS:
-        print(f"{r['label']:<38} {r['elapsed_s']:>8.3f} {r['mem_delta_mb']:>10.1f}")
+        print(
+            f"{r['label']:<38} {r['elapsed_s']:>8.3f} "
+            f"{r['mem_delta_mb']:>10.1f} {r.get('cpu_pct', 0):>8.1f}"
+        )
 
     peak_mem = max(r["mem_end_mb"] for r in RESULTS)
     base_mem = RESULTS[0]["mem_start_mb"]
     total_t  = sum(r["elapsed_s"] for r in RESULTS)
-    print("-" * 65)
+    peak_cpu = max(r.get("cpu_pct", 0) for r in RESULTS)
+    print("-" * 75)
     print(f"{'TOTAL':<38} {total_t:>8.3f}")
-    print(f"\nBase RSS: {base_mem:.0f} MB  |  Peak RSS: {peak_mem:.0f} MB  |  Δ: {peak_mem-base_mem:.0f} MB")
+    print(
+        f"\nBase RSS: {base_mem:.0f} MB  |  Peak RSS: {peak_mem:.0f} MB  |  "
+        f"Δ: {peak_mem-base_mem:.0f} MB  |  Peak CPU: {peak_cpu:.1f}%"
+    )
+
+    _save_utilization_chart()
+
     print("\nFor cluster-level metrics run:")
     print("  kubectl top pods -n jupyter-experiment")
     print("  kubectl top nodes")
@@ -363,6 +380,87 @@ def print_summary():
     with open("/tmp/stress_results.json", "w") as f:
         json.dump(RESULTS, f, indent=2)
     print("\nJSON results → /tmp/stress_results.json")
+
+
+def _save_utilization_chart():
+    labels   = [r["label"] for r in RESULTS]
+    cpu_vals = [r.get("cpu_pct", 0) for r in RESULTS]
+    mem_vals = [r["mem_end_mb"] for r in RESULTS]
+    x = range(len(labels))
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
+
+    ax1.bar(x, cpu_vals, color="steelblue")
+    ax1.set_ylabel("CPU %")
+    ax1.set_title("CPU Usage per Phase")
+    for i, v in enumerate(cpu_vals):
+        ax1.text(i, v + 0.5, f"{v:.1f}%", ha="center", fontsize=7)
+
+    ax2.bar(x, mem_vals, color="darkorange")
+    ax2.set_ylabel("RSS (MB)")
+    ax2.set_title("Memory (RSS) per Phase")
+    ax2.set_xticks(list(x))
+    ax2.set_xticklabels(labels, rotation=45, ha="right", fontsize=8)
+    for i, v in enumerate(mem_vals):
+        ax2.text(i, v + 1, f"{v:.0f}", ha="center", fontsize=7)
+
+    plt.tight_layout()
+    plt.savefig("/tmp/utilization_chart.png", dpi=150, bbox_inches="tight")
+    plt.close()
+    print("  Utilization chart → /tmp/utilization_chart.png")
+
+
+# ── scenario 5: extreme memory stress ────────────────────────────────────────
+# Goal: exceed 4Gi pod limit → OOM kill.
+# Each phase holds allocations alive (no del between phases) so RSS climbs.
+
+def run_extreme_stress(df: pd.DataFrame):
+    print("\n=== EXTREME MEMORY STRESS (target: OOM @ 4Gi) ===")
+    _graveyard = []  # intentionally never freed — keeps all phases in memory
+
+    # Phase 1: giant matmul — hold A, B, C simultaneously (~1.2 GB)
+    # 7000×7000 float64 = 392 MB each; A+B+C+BLAS working ≈ 1.5–2 GB
+    with measure("extreme_matmul_7000x7000"):
+        A = np.random.randn(7_000, 7_000).astype(np.float64)
+        B = np.random.randn(7_000, 7_000).astype(np.float64)
+        C = A @ B
+        _graveyard.extend([A, B, C])
+
+    # Phase 2: full SVD on 6000×6000 — U+s+Vt+working ≈ 1.5 GB spike on top
+    with measure("extreme_svd_6000x6000"):
+        M = np.random.randn(6_000, 6_000).astype(np.float64)
+        U, s, Vt = np.linalg.svd(M, full_matrices=True)
+        _graveyard.extend([M, U, s, Vt])
+
+    # Phase 3: pandas tile explosion — replicate full df 40× in memory
+    # 100k rows × 40 = 4M rows; with mixed dtypes ≈ 2–4 GB
+    with measure("extreme_pandas_tile_40x"):
+        big_df = pd.concat([df] * 40, ignore_index=True)
+        _graveyard.append(big_df)
+        print(f"    tiled df shape: {big_df.shape}")
+
+    # Phase 4: cross-join 4k×4k = 16M row cartesian product
+    # two numeric columns × 16M rows × ~16 bytes ≈ 250 MB minimum,
+    # but pandas cross merge builds full object array → 2–5 GB
+    with measure("extreme_cross_join_4k"):
+        chunk = df[["score_pct", "gpa"]].dropna().head(4_000).reset_index(drop=True)
+        chunk["_key"] = 1
+        exploded = chunk.merge(chunk, on="_key", suffixes=("_l", "_r")).drop(columns="_key")
+        _graveyard.append(exploded)
+        print(f"    cross-join shape: {exploded.shape}")
+
+    # Phase 5: incremental slab accumulator — alloc 512 MB chunks until OOM
+    # This is the kill shot: adds on top of everything already held above.
+    # Pod OOM-killed mid-loop; measure() __exit__ may never run — that's expected.
+    with measure("extreme_oom_slab_accumulator"):
+        SLAB_BYTES = 512 * 1024 * 1024          # 512 MB per slab
+        SLAB_ELEMS = SLAB_BYTES // 8             # float64
+        slab_n = 0
+        while True:
+            _graveyard.append(np.ones(SLAB_ELEMS, dtype=np.float64))
+            slab_n += 1
+            used_mb = psutil.Process().memory_info().rss / 1024 / 1024
+            print(f"    slab {slab_n}: +512 MB  total RSS {used_mb:.0f} MB", flush=True)
 
 
 # ── entrypoint ────────────────────────────────────────────────────────────────
@@ -377,7 +475,11 @@ def main():
     run_matplotlib_scenarios(df)
 
     conn.close()
+    # print_summary intentionally before extreme stress so results are saved
+    # even if the pod is OOM-killed during extreme phase
     print_summary()
+
+    run_extreme_stress(df)
 
 
 if __name__ == "__main__":
