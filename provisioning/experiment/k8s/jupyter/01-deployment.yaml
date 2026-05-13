@@ -17,8 +17,8 @@ spec:
     spec:
       containers:
         - name: jupyter
-          # scipy-notebook ships Python 3.10 + pandas, numpy, matplotlib, scipy
-          image: quay.io/jupyter/scipy-notebook:python-3.10
+          # scipy-notebook: use date-pinned tag for reproducibility; python-3.10 tag never existed
+          image: quay.io/jupyter/scipy-notebook:latest
           command: ["/bin/bash", "-c"]
           args:
             - |

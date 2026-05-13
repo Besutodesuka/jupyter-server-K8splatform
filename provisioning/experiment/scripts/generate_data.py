@@ -324,7 +324,7 @@ def main():
 
     # Row counts
     cur.execute("""
-        SELECT table_name, n_live_tup
+        SELECT relname, n_live_tup
         FROM pg_stat_user_tables
         ORDER BY n_live_tup DESC
     """)
