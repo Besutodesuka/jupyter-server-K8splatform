@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: jupyter-platform
+  labels:
+    app: jupyter-platform
+    kubernetes.io/metadata.name: jupyter-platform

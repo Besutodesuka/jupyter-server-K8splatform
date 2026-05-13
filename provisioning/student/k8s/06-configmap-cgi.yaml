@@ -1,0 +1,410 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-cgi
+  namespace: jupyter-platform
+data:
+  provision.cgi: |
+    #!/bin/bash
+    # CGI script: provision a student namespace and return a Jupyter URL.
+    # Invoked by fcgiwrap via NGINX POST /cgi-bin/provision.cgi
+
+    # ── Parse POST body ────────────────────────────────────────────────────────
+    read -r -n "${CONTENT_LENGTH:-0}" POST_DATA
+
+    # URL-decode the student_id value (handles both foo=7 and student_id=7)
+    STUDENT_ID_RAW=$(printf '%s' "$POST_DATA" \
+      | sed 's/.*student_id=\([^&]*\).*/\1/' \
+      | sed 's/%[0-9A-Fa-f]\{2\}/\\x&/g' \
+      | xargs printf '%b')
+
+    # ── Validate ───────────────────────────────────────────────────────────────
+    error_page() {
+      printf 'Content-Type: text/html\r\n\r\n'
+      cat <<HTML
+    <!DOCTYPE html><html><head><title>Error</title>
+    <meta http-equiv="refresh" content="4;url=/">
+    <style>body{font-family:sans-serif;display:flex;align-items:center;
+    justify-content:center;min-height:100vh;background:#f0f4f8;}
+    .card{background:#fff;padding:2rem;border-radius:12px;
+    box-shadow:0 4px 24px rgba(0,0,0,.1);text-align:center;max-width:360px;}
+    h2{color:#e53e3e;}p{color:#718096;margin-top:.8rem;}</style></head>
+    <body><div class="card"><h2>&#9888; $1</h2>
+    <p>$2</p><p><small>Redirecting back in 4 seconds...</small></p>
+    </div></body></html>
+    HTML
+      exit 0
+    }
+
+    # Must be an integer
+    if ! [[ "$STUDENT_ID_RAW" =~ ^[0-9]+$ ]]; then
+      error_page "Invalid Input" "Student ID must be a number between 1 and 100."
+    fi
+
+    NUM=$((10#$STUDENT_ID_RAW))
+    if [[ $NUM -lt 1 || $NUM -gt 100 ]]; then
+      error_page "Out of Range" "Student ID must be between 1 and 100."
+    fi
+
+    STUDENT_ID=$(printf "%03d" "$NUM")
+    NAMESPACE="student-${STUDENT_ID}"
+
+    # ── Discover node IP ───────────────────────────────────────────────────────
+    NODE_IP=$(kubectl get nodes \
+      -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' \
+      2>/dev/null || echo "localhost")
+
+    # ── Idempotency: skip creation if namespace already exists ─────────────────
+    ALREADY_EXISTS=false
+    if kubectl get namespace "$NAMESPACE" &>/dev/null; then
+      ALREADY_EXISTS=true
+    fi
+
+    if [[ "$ALREADY_EXISTS" == "false" ]]; then
+
+      # Apply all per-student objects in one kubectl apply call.
+      # STUDENT_ID and NAMESPACE are expanded by bash; everything else is literal YAML.
+      kubectl apply -f - <<MANIFEST
+    ---
+    # 1. Namespace
+    apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: ${NAMESPACE}
+      labels:
+        app: jupyter-platform
+        student: "${STUDENT_ID}"
+        kubernetes.io/metadata.name: ${NAMESPACE}
+    ---
+    # 2. ResourceQuota — hard aggregate ceiling for the whole namespace
+    apiVersion: v1
+    kind: ResourceQuota
+    metadata:
+      name: student-quota
+      namespace: ${NAMESPACE}
+    spec:
+      hard:
+        requests.cpu: "500m"
+        limits.cpu: "1"
+        requests.memory: "512Mi"
+        limits.memory: "2Gi"
+        requests.storage: "10Gi"
+        pods: "5"
+    ---
+    # 3. LimitRange — per-container defaults so pods without limits are auto-capped
+    apiVersion: v1
+    kind: LimitRange
+    metadata:
+      name: student-limits
+      namespace: ${NAMESPACE}
+    spec:
+      limits:
+        - type: Container
+          default:
+            cpu: "500m"
+            memory: "1Gi"
+          defaultRequest:
+            cpu: "250m"
+            memory: "512Mi"
+          max:
+            cpu: "1"
+            memory: "2Gi"
+    ---
+    # 4a. NetworkPolicy — deny all cross-namespace ingress by default
+    apiVersion: networking.k8s.io/v1
+    kind: NetworkPolicy
+    metadata:
+      name: default-deny-ingress
+      namespace: ${NAMESPACE}
+    spec:
+      podSelector: {}
+      policyTypes: [Ingress]
+    ---
+    # 4b. NetworkPolicy — allow intra-namespace traffic
+    apiVersion: networking.k8s.io/v1
+    kind: NetworkPolicy
+    metadata:
+      name: allow-same-namespace
+      namespace: ${NAMESPACE}
+    spec:
+      podSelector: {}
+      policyTypes: [Ingress]
+      ingress:
+        - from:
+            - podSelector: {}
+    ---
+    # 4c. NetworkPolicy — allow NGINX (jupyter-platform) to reach Jupyter on 8888
+    apiVersion: networking.k8s.io/v1
+    kind: NetworkPolicy
+    metadata:
+      name: allow-nginx-ingress
+      namespace: ${NAMESPACE}
+    spec:
+      podSelector:
+        matchLabels:
+          student: "${STUDENT_ID}"
+      policyTypes: [Ingress]
+      ingress:
+        - from:
+            - namespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: jupyter-platform
+          ports:
+            - port: 8888
+    ---
+    # 4d. NetworkPolicy — allow egress to kube-dns
+    apiVersion: networking.k8s.io/v1
+    kind: NetworkPolicy
+    metadata:
+      name: allow-egress-dns
+      namespace: ${NAMESPACE}
+    spec:
+      podSelector: {}
+      policyTypes: [Egress]
+      egress:
+        - ports:
+            - port: 53
+              protocol: UDP
+            - port: 53
+              protocol: TCP
+    ---
+    # 4e. NetworkPolicy — allow egress to shared Postgres in jupyter-experiment
+    apiVersion: networking.k8s.io/v1
+    kind: NetworkPolicy
+    metadata:
+      name: allow-egress-postgres
+      namespace: ${NAMESPACE}
+    spec:
+      podSelector: {}
+      policyTypes: [Egress]
+      egress:
+        - to:
+            - namespaceSelector:
+                matchLabels:
+                  app: jupyter-experiment
+          ports:
+            - port: 5432
+    ---
+    # 5. ServiceAccount for the student
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: student-${STUDENT_ID}
+      namespace: ${NAMESPACE}
+    ---
+    # 6. Role — scoped permissions within the student's own namespace
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: student-role
+      namespace: ${NAMESPACE}
+    rules:
+      - apiGroups: [""]
+        resources: ["pods"]
+        verbs: ["get", "list", "watch"]
+      - apiGroups: [""]
+        resources: ["pods/exec"]
+        verbs: ["create"]
+      - apiGroups: [""]
+        resources: ["pods/portforward"]
+        verbs: ["create"]
+      - apiGroups: [""]
+        resources: ["services"]
+        verbs: ["get", "list", "watch"]
+    ---
+    # 7. RoleBinding — bind student ServiceAccount to Role
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: student-rolebinding
+      namespace: ${NAMESPACE}
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: Role
+      name: student-role
+    subjects:
+      - kind: ServiceAccount
+        name: student-${STUDENT_ID}
+        namespace: ${NAMESPACE}
+    ---
+    # 8. PersistentVolumeClaim — 10Gi workspace survives pod restarts
+    apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: jupyter-workspace-${STUDENT_ID}
+      namespace: ${NAMESPACE}
+    spec:
+      accessModes: [ReadWriteOnce]
+      storageClassName: local-path
+      resources:
+        requests:
+          storage: 10Gi
+    ---
+    # 9. StatefulSet — stable pod name + guaranteed PVC re-attachment on eviction
+    apiVersion: apps/v1
+    kind: StatefulSet
+    metadata:
+      name: jupyter-${STUDENT_ID}
+      namespace: ${NAMESPACE}
+      labels:
+        app: jupyter-${STUDENT_ID}
+        student: "${STUDENT_ID}"
+    spec:
+      replicas: 1
+      serviceName: jupyter-service-${STUDENT_ID}
+      selector:
+        matchLabels:
+          student: "${STUDENT_ID}"
+      template:
+        metadata:
+          labels:
+            app: jupyter-${STUDENT_ID}
+            student: "${STUDENT_ID}"
+        spec:
+          serviceAccountName: student-${STUDENT_ID}
+          containers:
+            - name: jupyter
+              image: quay.io/jupyter/scipy-notebook:python-3.10
+              command: ["/bin/bash", "-c"]
+              args:
+                - |
+                  pip install psycopg2-binary sqlalchemy psutil --quiet && \
+                  jupyter lab \
+                    --ip=0.0.0.0 \
+                    --port=8888 \
+                    --no-browser \
+                    --ServerApp.token='' \
+                    --ServerApp.password='' \
+                    --ServerApp.allow_origin='*' \
+                    --ServerApp.base_url='/student/${STUDENT_ID}/'
+              env:
+                - name: DATABASE_URL
+                  value: "postgresql://courseuser:coursepass123@postgres-service.jupyter-experiment.svc.cluster.local:5432/coursedb"
+                - name: JUPYTER_ENABLE_LAB
+                  value: "yes"
+              ports:
+                - containerPort: 8888
+              resources:
+                requests:
+                  cpu: "250m"
+                  memory: "512Mi"
+                limits:
+                  cpu: "1"
+                  memory: "2Gi"
+              readinessProbe:
+                httpGet:
+                  path: /student/${STUDENT_ID}/lab
+                  port: 8888
+                initialDelaySeconds: 30
+                periodSeconds: 10
+                failureThreshold: 18
+              livenessProbe:
+                httpGet:
+                  path: /student/${STUDENT_ID}/lab
+                  port: 8888
+                initialDelaySeconds: 90
+                periodSeconds: 15
+              volumeMounts:
+                - name: workspace
+                  mountPath: /home/jovyan/work
+          volumes:
+            - name: workspace
+              persistentVolumeClaim:
+                claimName: jupyter-workspace-${STUDENT_ID}
+    ---
+    # 10. ClusterIP Service — NGINX resolves this via cluster DNS
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: jupyter-service-${STUDENT_ID}
+      namespace: ${NAMESPACE}
+    spec:
+      selector:
+        student: "${STUDENT_ID}"
+      ports:
+        - port: 8888
+          targetPort: 8888
+      type: ClusterIP
+    MANIFEST
+
+    fi  # end ALREADY_EXISTS check
+
+    # ── Return HTML response ───────────────────────────────────────────────────
+    JUPYTER_URL="/student/${STUDENT_ID}/lab"
+
+    printf 'Content-Type: text/html\r\n\r\n'
+    cat <<HTML
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <title>Notebook Ready</title>
+      <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          background: #f0f4f8;
+          display: flex; align-items: center; justify-content: center;
+          min-height: 100vh;
+        }
+        .card {
+          background: #fff; border-radius: 12px;
+          box-shadow: 0 4px 24px rgba(0,0,0,.10);
+          padding: 2.5rem 2rem; width: 100%; max-width: 420px; text-align: center;
+        }
+        .icon  { font-size: 2.8rem; margin-bottom: .5rem; }
+        h1     { font-size: 1.4rem; color: #276749; margin-bottom: .4rem; }
+        .badge {
+          display: inline-block; background: #ebf8ff; color: #2b6cb0;
+          border-radius: 20px; padding: .2rem .9rem; font-size: .85rem;
+          font-weight: 600; margin-bottom: 1.2rem;
+        }
+        p      { color: #718096; font-size: .95rem; margin-bottom: 1.4rem; }
+        a.btn  {
+          display: block; padding: .75rem; background: #48bb78; color: #fff;
+          border-radius: 8px; font-size: 1rem; font-weight: 600;
+          text-decoration: none; transition: background .2s;
+        }
+        a.btn:hover { background: #38a169; }
+        .timer { margin-top: 1rem; font-size: .8rem; color: #a0aec0; }
+        .back  { margin-top: .8rem; font-size: .8rem; color: #a0aec0; }
+        .back a { color: #4299e1; text-decoration: none; }
+      </style>
+      <script>
+        // Poll until JupyterLab responds, then auto-redirect.
+        var url  = "${JUPYTER_URL}";
+        var countdown = 15;
+        function tick() {
+          var el = document.getElementById("cd");
+          if (el) el.textContent = countdown + "s";
+          if (countdown <= 0) {
+            window.location.href = url;
+            return;
+          }
+          countdown--;
+          // Try fetching the lab API; on success redirect immediately
+          fetch(url + "/api", {method: "GET"})
+            .then(function(r) {
+              if (r.ok || r.status === 403) { window.location.href = url; }
+              else { setTimeout(tick, 1000); }
+            })
+            .catch(function() { setTimeout(tick, 1000); });
+        }
+        window.onload = function() { setTimeout(tick, 3000); };
+      </script>
+    </head>
+    <body>
+      <div class="card">
+        <div class="icon">&#9989;</div>
+        <h1>$([ "$ALREADY_EXISTS" == "true" ] && echo "Welcome back!" || echo "Notebook Created!")</h1>
+        <span class="badge">Student ${STUDENT_ID}</span>
+        <p>$([ "$ALREADY_EXISTS" == "true" ] \
+          && echo "Your environment is already running." \
+          || echo "Your isolated environment is starting up. This takes about 2 minutes while packages install.")</p>
+        <a class="btn" href="${JUPYTER_URL}">Open JupyterLab &#8594;</a>
+        <p class="timer">Auto-redirecting in <span id="cd">15s</span>...</p>
+        <p class="back"><a href="/">&#8592; Back to portal</a></p>
+      </div>
+    </body>
+    </html>
+    HTML

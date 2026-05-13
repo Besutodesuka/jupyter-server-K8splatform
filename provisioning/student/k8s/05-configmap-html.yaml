@@ -1,0 +1,71 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-html
+  namespace: jupyter-platform
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Jupyter Student Portal</title>
+      <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          background: #f0f4f8;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          min-height: 100vh;
+        }
+        .card {
+          background: #fff;
+          border-radius: 12px;
+          box-shadow: 0 4px 24px rgba(0,0,0,0.10);
+          padding: 2.5rem 2rem;
+          width: 100%;
+          max-width: 400px;
+          text-align: center;
+        }
+        .logo { font-size: 2.5rem; margin-bottom: 0.5rem; }
+        h1 { font-size: 1.4rem; color: #1a202c; margin-bottom: 0.4rem; }
+        p  { color: #718096; font-size: 0.95rem; margin-bottom: 1.6rem; }
+        label { display: block; text-align: left; font-size: 0.85rem;
+                color: #4a5568; margin-bottom: 0.4rem; font-weight: 600; }
+        input[type="number"] {
+          width: 100%; padding: 0.65rem 0.9rem;
+          border: 1.5px solid #cbd5e0; border-radius: 8px;
+          font-size: 1rem; color: #2d3748;
+          outline: none; transition: border-color 0.2s;
+          margin-bottom: 1.2rem;
+        }
+        input[type="number"]:focus { border-color: #4299e1; }
+        button {
+          width: 100%; padding: 0.75rem;
+          background: #4299e1; color: #fff;
+          border: none; border-radius: 8px;
+          font-size: 1rem; font-weight: 600;
+          cursor: pointer; transition: background 0.2s;
+        }
+        button:hover { background: #3182ce; }
+        .note { margin-top: 1.2rem; font-size: 0.8rem; color: #a0aec0; }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <div class="logo">&#128218;</div>
+        <h1>Jupyter Student Portal</h1>
+        <p>Enter your student ID to open your personal notebook environment.</p>
+        <form action="/cgi-bin/provision.cgi" method="POST">
+          <label for="student_id">Student ID (1 – 100)</label>
+          <input type="number" id="student_id" name="student_id"
+                 min="1" max="100" placeholder="e.g. 7" required autofocus>
+          <button type="submit">Open My Notebook &#8594;</button>
+        </form>
+        <p class="note">Your environment is isolated — your work only affects your own session.</p>
+      </div>
+    </body>
+    </html>

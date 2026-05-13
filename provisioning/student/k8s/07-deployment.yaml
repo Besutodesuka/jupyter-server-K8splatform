@@ -1,0 +1,108 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: provisioner
+  namespace: jupyter-platform
+  labels:
+    app: provisioner
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: provisioner
+  template:
+    metadata:
+      labels:
+        app: provisioner
+    spec:
+      serviceAccountName: provisioner
+
+      containers:
+        - name: provisioner
+          image: alpine:3
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+
+              echo "▶ Installing packages ..."
+              apk add --no-cache nginx fcgiwrap curl bash gettext
+
+              echo "▶ Downloading kubectl ..."
+              K8S_VER=$(curl -sSL \
+                https://dl.k8s.io/release/stable.txt)
+              curl -sSL \
+                "https://dl.k8s.io/release/${K8S_VER}/bin/linux/amd64/kubectl" \
+                -o /usr/local/bin/kubectl
+              chmod +x /usr/local/bin/kubectl
+
+              echo "▶ Configuring nginx ..."
+              # Discover cluster DNS IP from in-pod resolv.conf
+              DNS_IP=$(awk '/^nameserver/{print $2; exit}' /etc/resolv.conf)
+              mkdir -p /etc/nginx/conf.d
+              sed "s/CLUSTER_DNS_IP/${DNS_IP}/g" \
+                /etc/nginx-config/nginx.conf > /etc/nginx/nginx.conf
+
+              echo "▶ Copying static files and CGI script ..."
+              mkdir -p /usr/share/nginx/html /cgi-bin
+              cp /etc/nginx-html/index.html /usr/share/nginx/html/index.html
+              cp /etc/nginx-cgi/provision.cgi /cgi-bin/provision.cgi
+              chmod +x /cgi-bin/provision.cgi
+
+              echo "▶ Starting fcgiwrap ..."
+              fcgiwrap -s unix:/run/fcgiwrap.socket &
+
+              # Give fcgiwrap a moment to create the socket
+              sleep 1
+              chmod 777 /run/fcgiwrap.socket
+
+              echo "▶ Starting nginx ..."
+              exec nginx -g 'daemon off;'
+
+          ports:
+            - containerPort: 80
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 6
+
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 60
+            periodSeconds: 15
+
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx-config
+              readOnly: true
+            - name: nginx-html
+              mountPath: /etc/nginx-html
+              readOnly: true
+            - name: nginx-cgi
+              mountPath: /etc/nginx-cgi
+              readOnly: true
+
+      volumes:
+        - name: nginx-config
+          configMap:
+            name: nginx-config
+        - name: nginx-html
+          configMap:
+            name: nginx-html
+        - name: nginx-cgi
+          configMap:
+            name: nginx-cgi

@@ -1,0 +1,60 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+  namespace: jupyter-platform
+data:
+  nginx.conf: |
+    # CLUSTER_DNS_IP is replaced at container startup with the actual kube-dns ClusterIP
+    # (read from /etc/resolv.conf nameserver line)
+
+    events {
+      worker_connections 1024;
+    }
+
+    http {
+      resolver CLUSTER_DNS_IP valid=30s;
+
+      map $http_upgrade $connection_upgrade {
+        default upgrade;
+        ''      close;
+      }
+
+      server {
+        listen 80;
+        root  /usr/share/nginx/html;
+        index index.html;
+
+        # ── Student portal form ──────────────────────────────────────────────
+        location = / {
+          try_files /index.html =404;
+        }
+
+        # ── CGI provisioning endpoint ────────────────────────────────────────
+        location /cgi-bin/ {
+          fastcgi_pass  unix:/run/fcgiwrap.socket;
+          include       fastcgi_params;
+          fastcgi_param SCRIPT_FILENAME /cgi-bin/$fastcgi_script_name;
+        }
+
+        # ── Per-student Jupyter proxy (dynamic upstream via DNS) ─────────────
+        # Matches /student/007/... and proxies to ClusterIP service in that namespace.
+        # Variable upstream forces per-request DNS resolution via the resolver above.
+        location ~ ^/student/(\d+)/ {
+          set $sid      $1;
+          set $upstream "jupyter-service-$sid.student-$sid.svc.cluster.local";
+
+          proxy_pass         http://$upstream:8888;
+          proxy_http_version 1.1;
+          proxy_set_header   Upgrade    $http_upgrade;
+          proxy_set_header   Connection $connection_upgrade;
+          proxy_set_header   Host       $host;
+          proxy_read_timeout 86400;
+
+          # Pass real client IP for JupyterLab access logs
+          proxy_set_header   X-Real-IP        $remote_addr;
+          proxy_set_header   X-Forwarded-For  $proxy_add_x_forwarded_for;
+          proxy_set_header   X-Forwarded-Proto $scheme;
+        }
+      }
+    }
