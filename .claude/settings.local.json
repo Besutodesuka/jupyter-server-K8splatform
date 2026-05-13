@@ -18,7 +18,8 @@
       "Bash(kubectl set image *)",
       "Bash(kubectl rollout *)",
       "Bash(rtk grep *)",
-      "Bash(kubectl exec *)"
+      "Bash(kubectl exec *)",
+      "Bash(kubectl apply *)"
     ]
   }
 }

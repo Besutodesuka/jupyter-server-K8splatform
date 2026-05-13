@@ -1,0 +1,5 @@
+apiVersion: v2
+name: jupyter-student
+description: Isolated JupyterLab environment for one student — namespace, resource limits, RBAC, network policies, persistent storage, and StatefulSet.
+type: application
+version: 1.0.0

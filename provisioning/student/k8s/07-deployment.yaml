@@ -29,15 +29,25 @@ spec:
               apk add --no-cache nginx fcgiwrap curl bash gettext
 
               echo "▶ Downloading kubectl ..."
-              K8S_VER=$(curl -sSL \
-                https://dl.k8s.io/release/stable.txt)
+              ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+              K8S_VER=$(curl -sSL https://dl.k8s.io/release/stable.txt)
               curl -sSL \
-                "https://dl.k8s.io/release/${K8S_VER}/bin/linux/amd64/kubectl" \
+                "https://dl.k8s.io/release/${K8S_VER}/bin/linux/${ARCH}/kubectl" \
                 -o /usr/local/bin/kubectl
               chmod +x /usr/local/bin/kubectl
 
+              echo "▶ Downloading helm ..."
+              curl -sSL "https://get.helm.sh/helm-v3.17.0-linux-${ARCH}.tar.gz" \
+                | tar xz -C /tmp
+              mv /tmp/linux-${ARCH}/helm /usr/local/bin/helm
+
+              echo "▶ Reconstructing Helm chart from ConfigMaps ..."
+              mkdir -p /helm/student-chart/templates
+              cp /etc/helm-chart-meta/Chart.yaml  /helm/student-chart/
+              cp /etc/helm-chart-meta/values.yaml /helm/student-chart/
+              cp /etc/helm-chart-templates/*.yaml  /helm/student-chart/templates/
+
               echo "▶ Configuring nginx ..."
-              # Discover cluster DNS IP from in-pod resolv.conf
               DNS_IP=$(awk '/^nameserver/{print $2; exit}' /etc/resolv.conf)
               mkdir -p /etc/nginx/conf.d
               sed "s/CLUSTER_DNS_IP/${DNS_IP}/g" \
@@ -45,19 +55,21 @@ spec:
 
               echo "▶ Copying static files and CGI script ..."
               mkdir -p /usr/share/nginx/html /cgi-bin
-              cp /etc/nginx-html/index.html /usr/share/nginx/html/index.html
+              cp /etc/nginx-html/index.html   /usr/share/nginx/html/index.html
               cp /etc/nginx-cgi/provision.cgi /cgi-bin/provision.cgi
               chmod +x /cgi-bin/provision.cgi
 
               echo "▶ Starting fcgiwrap ..."
               fcgiwrap -s unix:/run/fcgiwrap.socket &
-
-              # Give fcgiwrap a moment to create the socket
               sleep 1
               chmod 777 /run/fcgiwrap.socket
 
               echo "▶ Starting nginx ..."
               exec nginx -g 'daemon off;'
+
+          env:
+            - name: STORAGE_CLASS
+              value: "standard"   # minikube; change to "local-path" for k3s
 
           ports:
             - containerPort: 80
@@ -95,6 +107,12 @@ spec:
             - name: nginx-cgi
               mountPath: /etc/nginx-cgi
               readOnly: true
+            - name: helm-chart-meta
+              mountPath: /etc/helm-chart-meta
+              readOnly: true
+            - name: helm-chart-templates
+              mountPath: /etc/helm-chart-templates
+              readOnly: true
 
       volumes:
         - name: nginx-config
@@ -106,3 +124,9 @@ spec:
         - name: nginx-cgi
           configMap:
             name: nginx-cgi
+        - name: helm-chart-meta
+          configMap:
+            name: helm-chart-meta
+        - name: helm-chart-templates
+          configMap:
+            name: helm-chart-templates

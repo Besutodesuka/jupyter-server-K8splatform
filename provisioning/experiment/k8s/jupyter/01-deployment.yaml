@@ -18,7 +18,7 @@ spec:
       containers:
         - name: jupyter
           # scipy-notebook: use date-pinned tag for reproducibility; python-3.10 tag never existed
-          image: quay.io/jupyter/scipy-notebook:latest
+          image: quay.io/jupyter/scipy-notebook:2024-05-27
           command: ["/bin/bash", "-c"]
           args:
             - |

@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jupyter-workspace-{{ .Values.studentId }}
+  namespace: student-{{ .Values.studentId }}
+  annotations:
+    # Prevent Helm from deleting the PVC on helm uninstall — preserves student work
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: {{ .Values.storageClassName }}
+  resources:
+    requests:
+      storage: {{ .Values.storage | quote }}

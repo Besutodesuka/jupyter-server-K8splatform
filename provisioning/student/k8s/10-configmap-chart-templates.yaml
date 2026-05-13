@@ -1,0 +1,254 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: helm-chart-templates
+  namespace: jupyter-platform
+data:
+  resourcequota.yaml: |
+    apiVersion: v1
+    kind: ResourceQuota
+    metadata:
+      name: student-quota
+      namespace: student-{{ .Values.studentId }}
+    spec:
+      hard:
+        requests.cpu: {{ .Values.quota.requestsCpu | quote }}
+        limits.cpu: {{ .Values.quota.limitsCpu | quote }}
+        requests.memory: {{ .Values.quota.requestsMemory | quote }}
+        limits.memory: {{ .Values.quota.limitsMemory | quote }}
+        requests.storage: {{ .Values.quota.storage | quote }}
+        pods: {{ .Values.quota.pods | quote }}
+
+  limitrange.yaml: |
+    apiVersion: v1
+    kind: LimitRange
+    metadata:
+      name: student-limits
+      namespace: student-{{ .Values.studentId }}
+    spec:
+      limits:
+        - type: Container
+          default:
+            cpu: {{ .Values.resources.limits.cpu | quote }}
+            memory: {{ .Values.resources.limits.memory | quote }}
+          defaultRequest:
+            cpu: {{ .Values.resources.requests.cpu | quote }}
+            memory: {{ .Values.resources.requests.memory | quote }}
+          max:
+            cpu: {{ .Values.quota.limitsCpu | quote }}
+            memory: {{ .Values.quota.limitsMemory | quote }}
+
+  networkpolicies.yaml: |
+    ---
+    apiVersion: networking.k8s.io/v1
+    kind: NetworkPolicy
+    metadata:
+      name: default-deny-ingress
+      namespace: student-{{ .Values.studentId }}
+    spec:
+      podSelector: {}
+      policyTypes: [Ingress]
+    ---
+    apiVersion: networking.k8s.io/v1
+    kind: NetworkPolicy
+    metadata:
+      name: allow-same-namespace
+      namespace: student-{{ .Values.studentId }}
+    spec:
+      podSelector: {}
+      policyTypes: [Ingress]
+      ingress:
+        - from:
+            - podSelector: {}
+    ---
+    apiVersion: networking.k8s.io/v1
+    kind: NetworkPolicy
+    metadata:
+      name: allow-nginx-ingress
+      namespace: student-{{ .Values.studentId }}
+    spec:
+      podSelector:
+        matchLabels:
+          student: {{ .Values.studentId | quote }}
+      policyTypes: [Ingress]
+      ingress:
+        - from:
+            - namespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: jupyter-platform
+          ports:
+            - port: 8888
+    ---
+    apiVersion: networking.k8s.io/v1
+    kind: NetworkPolicy
+    metadata:
+      name: allow-egress-dns
+      namespace: student-{{ .Values.studentId }}
+    spec:
+      podSelector: {}
+      policyTypes: [Egress]
+      egress:
+        - ports:
+            - port: 53
+              protocol: UDP
+            - port: 53
+              protocol: TCP
+    ---
+    apiVersion: networking.k8s.io/v1
+    kind: NetworkPolicy
+    metadata:
+      name: allow-egress-postgres
+      namespace: student-{{ .Values.studentId }}
+    spec:
+      podSelector: {}
+      policyTypes: [Egress]
+      egress:
+        - to:
+            - namespaceSelector:
+                matchLabels:
+                  app: jupyter-experiment
+          ports:
+            - port: 5432
+
+  serviceaccount.yaml: |
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: student-{{ .Values.studentId }}
+      namespace: student-{{ .Values.studentId }}
+
+  rbac.yaml: |
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: student-role
+      namespace: student-{{ .Values.studentId }}
+    rules:
+      - apiGroups: [""]
+        resources: ["pods"]
+        verbs: ["get", "list", "watch"]
+      - apiGroups: [""]
+        resources: ["pods/exec"]
+        verbs: ["create"]
+      - apiGroups: [""]
+        resources: ["pods/portforward"]
+        verbs: ["create"]
+      - apiGroups: [""]
+        resources: ["services"]
+        verbs: ["get", "list", "watch"]
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: student-rolebinding
+      namespace: student-{{ .Values.studentId }}
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: Role
+      name: student-role
+    subjects:
+      - kind: ServiceAccount
+        name: student-{{ .Values.studentId }}
+        namespace: student-{{ .Values.studentId }}
+
+  pvc.yaml: |
+    apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: jupyter-workspace-{{ .Values.studentId }}
+      namespace: student-{{ .Values.studentId }}
+      annotations:
+        helm.sh/resource-policy: keep
+    spec:
+      accessModes: [ReadWriteOnce]
+      storageClassName: {{ .Values.storageClassName }}
+      resources:
+        requests:
+          storage: {{ .Values.storage | quote }}
+
+  statefulset.yaml: |
+    apiVersion: apps/v1
+    kind: StatefulSet
+    metadata:
+      name: jupyter-{{ .Values.studentId }}
+      namespace: student-{{ .Values.studentId }}
+      labels:
+        app: jupyter-{{ .Values.studentId }}
+        student: {{ .Values.studentId | quote }}
+    spec:
+      replicas: 1
+      serviceName: jupyter-service-{{ .Values.studentId }}
+      selector:
+        matchLabels:
+          student: {{ .Values.studentId | quote }}
+      template:
+        metadata:
+          labels:
+            app: jupyter-{{ .Values.studentId }}
+            student: {{ .Values.studentId | quote }}
+        spec:
+          serviceAccountName: student-{{ .Values.studentId }}
+          containers:
+            - name: jupyter
+              image: {{ .Values.image }}
+              command: ["/bin/bash", "-c"]
+              args:
+                - |
+                  pip install psycopg2-binary sqlalchemy psutil --quiet && \
+                  jupyter lab \
+                    --ip=0.0.0.0 \
+                    --port=8888 \
+                    --no-browser \
+                    --ServerApp.token='' \
+                    --ServerApp.password='' \
+                    --ServerApp.allow_origin='*' \
+                    --ServerApp.base_url='/student/{{ .Values.studentId }}/'
+              env:
+                - name: DATABASE_URL
+                  value: {{ .Values.dbUrl | quote }}
+                - name: JUPYTER_ENABLE_LAB
+                  value: "yes"
+              ports:
+                - containerPort: 8888
+              resources:
+                requests:
+                  cpu: {{ .Values.resources.requests.cpu | quote }}
+                  memory: {{ .Values.resources.requests.memory | quote }}
+                limits:
+                  cpu: {{ .Values.resources.limits.cpu | quote }}
+                  memory: {{ .Values.resources.limits.memory | quote }}
+              readinessProbe:
+                httpGet:
+                  path: /student/{{ .Values.studentId }}/lab
+                  port: 8888
+                initialDelaySeconds: 30
+                periodSeconds: 10
+                failureThreshold: 18
+              livenessProbe:
+                httpGet:
+                  path: /student/{{ .Values.studentId }}/lab
+                  port: 8888
+                initialDelaySeconds: 90
+                periodSeconds: 15
+              volumeMounts:
+                - name: workspace
+                  mountPath: /home/jovyan/work
+          volumes:
+            - name: workspace
+              persistentVolumeClaim:
+                claimName: jupyter-workspace-{{ .Values.studentId }}
+
+  service.yaml: |
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: jupyter-service-{{ .Values.studentId }}
+      namespace: student-{{ .Values.studentId }}
+    spec:
+      selector:
+        student: {{ .Values.studentId | quote }}
+      ports:
+        - port: 8888
+          targetPort: 8888
+      type: ClusterIP

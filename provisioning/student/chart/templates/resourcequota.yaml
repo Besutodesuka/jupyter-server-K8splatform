@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: student-quota
+  namespace: student-{{ .Values.studentId }}
+spec:
+  hard:
+    requests.cpu: {{ .Values.quota.requestsCpu | quote }}
+    limits.cpu: {{ .Values.quota.limitsCpu | quote }}
+    requests.memory: {{ .Values.quota.requestsMemory | quote }}
+    limits.memory: {{ .Values.quota.limitsMemory | quote }}
+    requests.storage: {{ .Values.quota.storage | quote }}
+    pods: {{ .Values.quota.pods | quote }}

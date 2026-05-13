@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: jupyter-{{ .Values.studentId }}
+  namespace: student-{{ .Values.studentId }}
+  labels:
+    app: jupyter-{{ .Values.studentId }}
+    student: {{ .Values.studentId | quote }}
+spec:
+  replicas: 1
+  serviceName: jupyter-service-{{ .Values.studentId }}
+  selector:
+    matchLabels:
+      student: {{ .Values.studentId | quote }}
+  template:
+    metadata:
+      labels:
+        app: jupyter-{{ .Values.studentId }}
+        student: {{ .Values.studentId | quote }}
+    spec:
+      serviceAccountName: student-{{ .Values.studentId }}
+      containers:
+        - name: jupyter
+          image: {{ .Values.image }}
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              pip install psycopg2-binary sqlalchemy psutil --quiet && \
+              jupyter lab \
+                --ip=0.0.0.0 \
+                --port=8888 \
+                --no-browser \
+                --ServerApp.token='' \
+                --ServerApp.password='' \
+                --ServerApp.allow_origin='*' \
+                --ServerApp.base_url='/student/{{ .Values.studentId }}/'
+          env:
+            - name: DATABASE_URL
+              value: {{ .Values.dbUrl | quote }}
+            - name: JUPYTER_ENABLE_LAB
+              value: "yes"
+          ports:
+            - containerPort: 8888
+          resources:
+            requests:
+              cpu: {{ .Values.resources.requests.cpu | quote }}
+              memory: {{ .Values.resources.requests.memory | quote }}
+            limits:
+              cpu: {{ .Values.resources.limits.cpu | quote }}
+              memory: {{ .Values.resources.limits.memory | quote }}
+          readinessProbe:
+            httpGet:
+              path: /student/{{ .Values.studentId }}/lab
+              port: 8888
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 18
+          livenessProbe:
+            httpGet:
+              path: /student/{{ .Values.studentId }}/lab
+              port: 8888
+            initialDelaySeconds: 90
+            periodSeconds: 15
+          volumeMounts:
+            - name: workspace
+              mountPath: /home/jovyan/work
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: jupyter-workspace-{{ .Values.studentId }}

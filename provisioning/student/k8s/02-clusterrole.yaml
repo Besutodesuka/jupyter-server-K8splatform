@@ -15,8 +15,14 @@ rules:
       - limitranges
       - persistentvolumeclaims
       - serviceaccounts
-      - services
+      - secrets        # Helm stores release state as Secrets in each namespace
+      - events
     verbs: ["create", "get", "list", "update", "patch", "delete"]
+
+  # Services — must include watch to be able to grant it in student Role
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
 
   # RBAC inside student namespaces
   - apiGroups: ["rbac.authorization.k8s.io"]
@@ -33,10 +39,13 @@ rules:
     resources: ["statefulsets", "deployments"]
     verbs: ["create", "get", "list", "update", "patch", "delete"]
 
-  # Pod observation (for wait/status checks)
+  # Pod observation + exec/portforward (must hold these to grant them via Role)
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/exec", "pods/portforward"]
+    verbs: ["create"]
 
   # Node info (for NodeIP in response URL)
   - apiGroups: [""]

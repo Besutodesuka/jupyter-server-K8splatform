@@ -12,7 +12,7 @@ This gives the `requests` floor and informs `limits` for production sizing.
 | Pod | Image | Role |
 |---|---|---|
 | `postgres` | `postgres:15` | Coursework DB, ~100k rows |
-| `jupyter` | `quay.io/jupyter/scipy-notebook:python-3.10` | Python 3.10 + pandas/numpy/matplotlib |
+| `jupyter` | `quay.io/jupyter/scipy-notebook:2024-05-27` | Python 3.10 + pandas/numpy/matplotlib |
 
 Namespace: `jupyter-experiment`
 
