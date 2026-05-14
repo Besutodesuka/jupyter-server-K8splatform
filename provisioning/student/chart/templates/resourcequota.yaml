@@ -6,8 +6,8 @@ metadata:
 spec:
   hard:
     requests.cpu: {{ .Values.quota.requestsCpu | quote }}
-    limits.cpu: {{ .Values.quota.limitsCpu | quote }}
+    limits.cpu: {{ .Values.resources.limits.cpu | quote }}
     requests.memory: {{ .Values.quota.requestsMemory | quote }}
-    limits.memory: {{ .Values.quota.limitsMemory | quote }}
+    limits.memory: {{ .Values.resources.limits.memory | quote }}
     requests.storage: {{ .Values.quota.storage | quote }}
     pods: {{ .Values.quota.pods | quote }}

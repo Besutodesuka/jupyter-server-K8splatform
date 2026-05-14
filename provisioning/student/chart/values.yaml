@@ -1,35 +1,27 @@
-# Student ID — set at install time via --set studentId=007
 studentId: ""
 
-# JupyterLab image
 image: quay.io/jupyter/scipy-notebook:2024-05-27
 
-# Shared Postgres database URL (cross-namespace FQDN)
 dbUrl: postgresql://courseuser:coursepass123@postgres-service.jupyter-experiment.svc.cluster.local:5432/coursedb
 
-# Per-student Jupyter pod resource limits
-# These must mirror the quota values below — see README for the invariant rule
+# Hard limits per Jupyter pod — also enforced at the namespace level (ResourceQuota + LimitRange).
+# Change cpu and memory here to adjust the hard cap for every student.
 resources:
   limits:
     cpu: "1"
-    memory: "2Gi"
+    memory: "1Gi"
   requests:
     cpu: "250m"
     memory: "512Mi"
 
-# ResourceQuota — hard aggregate ceiling for the whole namespace
+# Namespace-level aggregate quota (independent of per-pod limits above).
 quota:
-  limitsCpu: "1"
-  limitsMemory: "2Gi"
   requestsCpu: "500m"
   requestsMemory: "512Mi"
   storage: "10Gi"
   pods: "5"
 
-# PVC size for the student's Jupyter workspace
 storage: "10Gi"
 
-# StorageClass for student PVCs.
-# k3s:      local-path
-# minikube: standard
+# k3s: local-path  |  minikube: standard
 storageClassName: local-path
