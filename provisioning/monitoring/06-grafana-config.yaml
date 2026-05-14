@@ -35,7 +35,7 @@ data:
         options:
           path: /var/lib/grafana/dashboards
 ---
-# Multi-tenant overview dashboard
+# Dashboards: multi-tenant overview + per-student drill-down
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -52,9 +52,103 @@ data:
       "panels": [
         {
           "id": 1,
-          "title": "Namespace CPU Quota Usage %",
+          "title": "Active Students",
+          "type": "stat",
+          "gridPos": { "x": 0, "y": 0, "w": 4, "h": 3 },
+          "targets": [{
+            "expr": "count(count by (namespace) (kube_pod_status_phase{phase=\"Running\", namespace=~\"student-.*\"})) or vector(0)",
+            "legendFormat": ""
+          }],
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+          "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "green", "value": 0 }] } } }
+        },
+        {
+          "id": 2,
+          "title": "Node CPU %",
+          "type": "stat",
+          "gridPos": { "x": 4, "y": 0, "w": 4, "h": 3 },
+          "targets": [{
+            "expr": "(1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m]))) * 100",
+            "legendFormat": ""
+          }],
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "yellow", "value": 70 }, { "color": "red", "value": 90 }] }
+            }
+          }
+        },
+        {
+          "id": 3,
+          "title": "Node RAM %",
+          "type": "stat",
+          "gridPos": { "x": 8, "y": 0, "w": 4, "h": 3 },
+          "targets": [{
+            "expr": "(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100",
+            "legendFormat": ""
+          }],
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "yellow", "value": 70 }, { "color": "red", "value": 90 }] }
+            }
+          }
+        },
+        {
+          "id": 4,
+          "title": "Quota Hard Limits Hit",
+          "type": "stat",
+          "gridPos": { "x": 12, "y": 0, "w": 4, "h": 3 },
+          "targets": [{
+            "expr": "count(namespace:quota_cpu_used_ratio >= 1 or namespace:quota_memory_used_ratio >= 1) or vector(0)",
+            "legendFormat": ""
+          }],
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "red", "value": 1 }] }
+            }
+          }
+        },
+        {
+          "id": 5,
+          "title": "OOMKilled (last 1h)",
+          "type": "stat",
+          "gridPos": { "x": 16, "y": 0, "w": 4, "h": 3 },
+          "targets": [{
+            "expr": "count(kube_pod_container_status_last_terminated_reason{reason=\"OOMKilled\", namespace=~\"student-.*\"} == 1) or vector(0)",
+            "legendFormat": ""
+          }],
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "yellow", "value": 1 }] }
+            }
+          }
+        },
+        {
+          "id": 6,
+          "title": "Orphaned Namespaces",
+          "type": "stat",
+          "gridPos": { "x": 20, "y": 0, "w": 4, "h": 3 },
+          "targets": [{
+            "expr": "count((kube_namespace_labels{namespace=~\"student-.*\"} unless on(namespace) kube_pod_status_phase{phase=\"Running\", namespace=~\"student-.*\"}) * on(namespace) group_left() ((time() - kube_namespace_created{namespace=~\"student-.*\"}) > 3600)) or vector(0)",
+            "legendFormat": ""
+          }],
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "yellow", "value": 1 }] }
+            }
+          }
+        },
+        {
+          "id": 7,
+          "title": "CPU Quota Usage % per Student",
           "type": "bargauge",
-          "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+          "gridPos": { "x": 0, "y": 3, "w": 12, "h": 8 },
           "targets": [{
             "expr": "namespace:quota_cpu_used_ratio{namespace=~\"student-.*\"} * 100",
             "legendFormat": "{{ namespace }}"
@@ -73,10 +167,10 @@ data:
           "fieldConfig": { "defaults": { "unit": "percent", "max": 100 } }
         },
         {
-          "id": 2,
-          "title": "Namespace Memory Quota Usage %",
+          "id": 8,
+          "title": "Memory Quota Usage % per Student",
           "type": "bargauge",
-          "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+          "gridPos": { "x": 12, "y": 3, "w": 12, "h": 8 },
           "targets": [{
             "expr": "namespace:quota_memory_used_ratio{namespace=~\"student-.*\"} * 100",
             "legendFormat": "{{ namespace }}"
@@ -95,32 +189,32 @@ data:
           "fieldConfig": { "defaults": { "unit": "percent", "max": 100 } }
         },
         {
-          "id": 3,
-          "title": "Node CPU Utilization %",
+          "id": 9,
+          "title": "Actual CPU per Student (millicores)",
           "type": "timeseries",
-          "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+          "gridPos": { "x": 0, "y": 11, "w": 12, "h": 8 },
           "targets": [{
-            "expr": "(1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) by (node)) * 100",
-            "legendFormat": "{{ node }}"
+            "expr": "sum by (namespace) (rate(container_cpu_usage_seconds_total{container!=\"\", namespace=~\"student-.*\"}[5m])) * 1000",
+            "legendFormat": "{{ namespace }}"
           }],
-          "fieldConfig": { "defaults": { "unit": "percent" } }
+          "fieldConfig": { "defaults": { "unit": "none", "custom": { "lineWidth": 1 } } }
         },
         {
-          "id": 4,
-          "title": "Node Memory Utilization %",
+          "id": 10,
+          "title": "Actual Memory per Student (MiB)",
           "type": "timeseries",
-          "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+          "gridPos": { "x": 12, "y": 11, "w": 12, "h": 8 },
           "targets": [{
-            "expr": "(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100",
-            "legendFormat": "{{ node }}"
+            "expr": "sum by (namespace) (container_memory_working_set_bytes{container!=\"\", namespace=~\"student-.*\"}) / 1024 / 1024",
+            "legendFormat": "{{ namespace }}"
           }],
-          "fieldConfig": { "defaults": { "unit": "percent" } }
+          "fieldConfig": { "defaults": { "unit": "none", "custom": { "lineWidth": 1 } } }
         },
         {
-          "id": 5,
-          "title": "Top 10 Pods by Actual CPU Usage (millicores)",
+          "id": 11,
+          "title": "Top 10 CPU Consumers (millicores)",
           "type": "table",
-          "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
+          "gridPos": { "x": 0, "y": 19, "w": 12, "h": 8 },
           "targets": [{
             "expr": "topk(10, sum(rate(container_cpu_usage_seconds_total{container!=\"\", namespace=~\"student-.*\"}[5m])) by (namespace, pod) * 1000)",
             "legendFormat": "{{ namespace }}/{{ pod }}",
@@ -129,10 +223,10 @@ data:
           "fieldConfig": { "defaults": { "unit": "none" } }
         },
         {
-          "id": 6,
-          "title": "Top 10 Pods by Actual Memory (MiB)",
+          "id": 12,
+          "title": "Top 10 Memory Consumers (MiB)",
           "type": "table",
-          "gridPos": { "x": 12, "y": 16, "w": 12, "h": 8 },
+          "gridPos": { "x": 12, "y": 19, "w": 12, "h": 8 },
           "targets": [{
             "expr": "topk(10, sum(container_memory_working_set_bytes{container!=\"\", namespace=~\"student-.*\"}) by (namespace, pod) / 1024 / 1024)",
             "legendFormat": "{{ namespace }}/{{ pod }}",
@@ -141,58 +235,10 @@ data:
           "fieldConfig": { "defaults": { "unit": "none" } }
         },
         {
-          "id": 7,
-          "title": "Quota Hard Limit Reached (isolation breaches blocked)",
-          "type": "stat",
-          "gridPos": { "x": 0, "y": 24, "w": 8, "h": 4 },
-          "targets": [{
-            "expr": "count(namespace:quota_cpu_used_ratio >= 1 or namespace:quota_memory_used_ratio >= 1) or vector(0)",
-            "legendFormat": "namespaces at hard limit"
-          }],
-          "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
-          "fieldConfig": {
-            "defaults": {
-              "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "red", "value": 1 }] }
-            }
-          }
-        },
-        {
-          "id": 8,
-          "title": "OOMKilled Containers (last 1h)",
-          "type": "stat",
-          "gridPos": { "x": 8, "y": 24, "w": 8, "h": 4 },
-          "targets": [{
-            "expr": "count(kube_pod_container_status_last_terminated_reason{reason=\"OOMKilled\", namespace=~\"student-.*\"} == 1) or vector(0)",
-            "legendFormat": "OOMKilled containers"
-          }],
-          "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
-          "fieldConfig": {
-            "defaults": {
-              "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "yellow", "value": 1 }] }
-            }
-          }
-        },
-        {
-          "id": 9,
-          "title": "Orphaned Namespaces (no running pods >1h)",
-          "type": "stat",
-          "gridPos": { "x": 16, "y": 24, "w": 8, "h": 4 },
-          "targets": [{
-            "expr": "count((kube_namespace_labels{namespace=~\"student-.*\"} unless on(namespace) kube_pod_status_phase{phase=\"Running\", namespace=~\"student-.*\"}) * on(namespace) group_left() ((time() - kube_namespace_created{namespace=~\"student-.*\"}) > 3600)) or vector(0)",
-            "legendFormat": "orphaned"
-          }],
-          "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
-          "fieldConfig": {
-            "defaults": {
-              "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "yellow", "value": 1 }] }
-            }
-          }
-        },
-        {
-          "id": 10,
-          "title": "Storage Quota Usage by Namespace",
+          "id": 13,
+          "title": "Storage Quota Usage % per Student",
           "type": "bargauge",
-          "gridPos": { "x": 0, "y": 28, "w": 24, "h": 6 },
+          "gridPos": { "x": 0, "y": 27, "w": 24, "h": 6 },
           "targets": [{
             "expr": "namespace:quota_storage_used_ratio{namespace=~\"student-.*\"} * 100",
             "legendFormat": "{{ namespace }}"
@@ -209,6 +255,185 @@ data:
             }
           },
           "fieldConfig": { "defaults": { "unit": "percent", "max": 100 } }
+        }
+      ]
+    }
+  student-drilldown.json: |
+    {
+      "title": "Jupyter Platform — Student Drill-Down",
+      "uid": "jupyter-student-drill",
+      "schemaVersion": 38,
+      "refresh": "30s",
+      "time": { "from": "now-1h", "to": "now" },
+      "templating": {
+        "list": [
+          {
+            "hide": 0,
+            "includeAll": false,
+            "multi": false,
+            "name": "namespace",
+            "label": "Student Namespace",
+            "options": [],
+            "query": "label_values(kube_namespace_labels{namespace=~\"student-.*\"}, namespace)",
+            "refresh": 2,
+            "regex": "",
+            "sort": 1,
+            "type": "query"
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "title": "CPU Actual (millicores)",
+          "type": "stat",
+          "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+          "targets": [{
+            "expr": "sum(rate(container_cpu_usage_seconds_total{container!=\"\", namespace=\"$namespace\"}[5m])) * 1000",
+            "legendFormat": ""
+          }],
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+          "fieldConfig": { "defaults": { "unit": "none" } }
+        },
+        {
+          "id": 2,
+          "title": "Memory Actual (MiB)",
+          "type": "stat",
+          "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+          "targets": [{
+            "expr": "sum(container_memory_working_set_bytes{container!=\"\", namespace=\"$namespace\"}) / 1024 / 1024",
+            "legendFormat": ""
+          }],
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+          "fieldConfig": { "defaults": { "unit": "none" } }
+        },
+        {
+          "id": 3,
+          "title": "CPU Quota %",
+          "type": "gauge",
+          "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+          "targets": [{
+            "expr": "namespace:quota_cpu_used_ratio{namespace=\"$namespace\"} * 100",
+            "legendFormat": ""
+          }],
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "max": 100,
+              "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "yellow", "value": 60 }, { "color": "red", "value": 80 }] }
+            }
+          }
+        },
+        {
+          "id": 4,
+          "title": "Memory Quota %",
+          "type": "gauge",
+          "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+          "targets": [{
+            "expr": "namespace:quota_memory_used_ratio{namespace=\"$namespace\"} * 100",
+            "legendFormat": ""
+          }],
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "max": 100,
+              "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "yellow", "value": 60 }, { "color": "red", "value": 80 }] }
+            }
+          }
+        },
+        {
+          "id": 5,
+          "title": "CPU Over Time — actual vs request vs limit",
+          "type": "timeseries",
+          "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+          "targets": [
+            {
+              "expr": "sum(rate(container_cpu_usage_seconds_total{container!=\"\", namespace=\"$namespace\"}[5m])) * 1000",
+              "legendFormat": "actual (m)"
+            },
+            {
+              "expr": "sum(kube_pod_container_resource_requests{resource=\"cpu\", namespace=\"$namespace\"}) * 1000",
+              "legendFormat": "request (m)"
+            },
+            {
+              "expr": "sum(kube_pod_container_resource_limits{resource=\"cpu\", namespace=\"$namespace\"}) * 1000",
+              "legendFormat": "limit (m)"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "none" } }
+        },
+        {
+          "id": 6,
+          "title": "Memory Over Time — actual vs request vs limit",
+          "type": "timeseries",
+          "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+          "targets": [
+            {
+              "expr": "sum(container_memory_working_set_bytes{container!=\"\", namespace=\"$namespace\"}) / 1024 / 1024",
+              "legendFormat": "actual (MiB)"
+            },
+            {
+              "expr": "sum(kube_pod_container_resource_requests{resource=\"memory\", namespace=\"$namespace\"}) / 1024 / 1024",
+              "legendFormat": "request (MiB)"
+            },
+            {
+              "expr": "sum(kube_pod_container_resource_limits{resource=\"memory\", namespace=\"$namespace\"}) / 1024 / 1024",
+              "legendFormat": "limit (MiB)"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "none" } }
+        },
+        {
+          "id": 7,
+          "title": "Pod Restarts",
+          "type": "stat",
+          "gridPos": { "x": 0, "y": 12, "w": 8, "h": 4 },
+          "targets": [{
+            "expr": "sum(kube_pod_container_status_restarts_total{namespace=\"$namespace\"}) or vector(0)",
+            "legendFormat": ""
+          }],
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 5 }] }
+            }
+          }
+        },
+        {
+          "id": 8,
+          "title": "OOMKilled",
+          "type": "stat",
+          "gridPos": { "x": 8, "y": 12, "w": 8, "h": 4 },
+          "targets": [{
+            "expr": "count(kube_pod_container_status_last_terminated_reason{reason=\"OOMKilled\", namespace=\"$namespace\"} == 1) or vector(0)",
+            "legendFormat": ""
+          }],
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "red", "value": 1 }] }
+            }
+          }
+        },
+        {
+          "id": 9,
+          "title": "Storage Quota %",
+          "type": "gauge",
+          "gridPos": { "x": 16, "y": 12, "w": 8, "h": 4 },
+          "targets": [{
+            "expr": "namespace:quota_storage_used_ratio{namespace=\"$namespace\"} * 100",
+            "legendFormat": ""
+          }],
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "max": 100,
+              "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "yellow", "value": 70 }, { "color": "red", "value": 90 }] }
+            }
+          }
         }
       ]
     }

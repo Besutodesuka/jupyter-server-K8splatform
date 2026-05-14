@@ -9,21 +9,34 @@ Covers: metrics collected, deployment, and how to test each project requirement.
 ```
 Every Node
   └── node-exporter (DaemonSet, hostNetwork)
-        │  hardware: CPU, RAM, disk, network
+        │  hardware: CPU, RAM, disk, network (node health only)
         ▼
   Prometheus (monitoring namespace)
   ├── scrapes node-exporter via kubernetes node SD
   ├── scrapes kube-state-metrics → quota/pod/namespace state
-  ├── scrapes kubelet cAdvisor  → per-container CPU/RAM usage
+  ├── scrapes kubelet cAdvisor  → per-container CPU/RAM (all namespaces)
   ├── evaluates recording rules  (namespace:quota_*_used_ratio)
   └── fires alerts               (quota near-limit, OOMKill, orphans)
         │
         ▼
   Grafana (monitoring namespace)
-  └── "Jupyter Platform — Multi-Tenant Overview" dashboard
+  ├── "Multi-Tenant Overview"   — all students at a glance
+  └── "Student Drill-Down"      — single student deep-dive ($namespace variable)
 ```
 
 No changes are required to student namespaces. node-exporter uses `hostNetwork` and cAdvisor is served by kubelet — neither is blocked by student-namespace NetworkPolicies.
+
+### Single-node design note
+
+All student pods run on one node. Monitoring granularity comes from **three layers**:
+
+| Layer | Source | Granularity |
+|---|---|---|
+| Node health | node-exporter | Whole machine — "is the node dying?" |
+| Per-student usage | cAdvisor | Per container/namespace — "who is using what?" |
+| Quota state | kube-state-metrics | Per namespace — "who is near/at their limit?" |
+
+node-exporter does not attach to pods. It is a per-node DaemonSet. On a single-node cluster exactly one node-exporter pod runs and covers the whole machine. cAdvisor (served by kubelet) automatically reports metrics for every container on that node, labeled by `namespace`, `pod`, and `container` — giving per-student visibility with zero per-namespace configuration.
 
 ---
 
@@ -241,7 +254,7 @@ rate(container_cpu_usage_seconds_total{namespace="student-11", container!=""}[1m
 ALERTS{alertname="TenantCpuQuotaNearLimit", namespace="student-10"}
 ```
 
-**Observe in Grafana:** student-10 CPU bar turns red; student-11 bar remains green. "Quota Hard Limit Reached" stat counter increments for student-10.
+**Observe in Grafana:** In the overview, student-10 CPU bar turns red; student-11 bar remains green. "Quota Hard Limits Hit" stat counter increments. In the drill-down (select `student-10`), the "CPU Over Time" panel shows actual usage hitting the limit line.
 
 **Observe OOMKill isolation:**
 ```bash
@@ -262,20 +275,38 @@ kube_pod_container_status_last_terminated_reason{reason="OOMKilled", namespace="
 
 ---
 
-### 4. Administrative Oversight — Centralized dashboard
+### 4. Administrative Oversight — Centralized dashboards
+
+#### Multi-Tenant Overview (admin view)
 
 Open Grafana → "Jupyter Platform — Multi-Tenant Overview".
 
 | Panel | What it shows |
 |---|---|
-| CPU / Memory Quota Usage % | Which namespaces are near limits |
-| Node CPU / Memory Utilization | Overall node health |
-| Top 10 Pods by CPU | Identify high-usage workloads |
-| Top 10 Pods by Memory | Identify memory-hungry pods |
-| Quota Hard Limit Reached | Count of namespaces currently at ceiling |
-| OOMKilled Containers | Containers killed by kernel memory enforcement |
+| Active Students | Count of namespaces with at least one Running pod |
+| Node CPU % / Node RAM % | Compact stats — whole-machine health at a glance |
+| Quota Hard Limits Hit | Namespaces currently at ceiling (API blocks new pods) |
+| OOMKilled (last 1h) | Containers killed by kernel memory enforcement |
 | Orphaned Namespaces | Provisioned but idle >1h — candidates for cleanup |
+| CPU / Memory Quota Usage % | Bar gauge per student — who is near their limit |
+| Actual CPU per Student (timeseries) | cAdvisor — real CPU consumed per namespace over time |
+| Actual Memory per Student (timeseries) | cAdvisor — real RAM consumed per namespace over time |
+| Top 10 CPU / Memory Consumers | Noisy neighbor table — namespace + pod ranked by usage |
 | Storage Quota Usage | Disk consumption per tenant |
+
+#### Student Drill-Down (per-student view)
+
+Open Grafana → "Jupyter Platform — Student Drill-Down". Select a namespace from the **Student Namespace** dropdown.
+
+| Panel | What it shows |
+|---|---|
+| CPU Actual / Memory Actual | Current snapshot of real usage |
+| CPU Quota % / Memory Quota % | Gauge — how close to hard limit |
+| CPU Over Time (actual vs request vs limit) | Trend + headroom before throttle |
+| Memory Over Time (actual vs request vs limit) | Trend + headroom before OOMKill |
+| Pod Restarts | Crash loop indicator |
+| OOMKilled | Whether memory limit was ever hit |
+| Storage Quota % | Disk usage for this student |
 
 **CLI alternative:**
 ```bash
@@ -363,7 +394,8 @@ provisioning/monitoring/
   03-kube-state-metrics.yaml  Deployment + Service
   04-prometheus-config.yaml   ConfigMap: prometheus.yml + recording rules + alerting rules
   05-prometheus-deployment.yaml     PVC + Deployment + NodePort Service (30090)
-  06-grafana-config.yaml      ConfigMaps: datasource + dashboard provider + dashboard JSON
+  06-grafana-config.yaml      ConfigMaps: datasource + dashboard provider + two dashboard JSONs
+                                (multi-tenant-overview.json + student-drilldown.json)
   07-grafana-deployment.yaml  PVC + Deployment + NodePort Service (30030)
   deploy.sh                   One-shot deploy script
 ```
