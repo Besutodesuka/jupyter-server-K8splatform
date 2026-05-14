@@ -1,0 +1,159 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: monitoring
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval:     15s
+      evaluation_interval: 15s
+      external_labels:
+        cluster: jupyter-k8s-platform
+
+    rule_files:
+      - /etc/prometheus/rules/*.yml
+
+    scrape_configs:
+
+      # ── Node hardware metrics (via DaemonSet on host network) ──────────────
+      - job_name: node-exporter
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          - source_labels: [__address__]
+            regex: (.+):.+
+            target_label: __address__
+            replacement: $1:9100
+          - source_labels: [__meta_kubernetes_node_name]
+            target_label: node
+
+      # ── Kubernetes object state: quotas, pods, namespaces ─────────────────
+      - job_name: kube-state-metrics
+        static_configs:
+          - targets: ['kube-state-metrics.monitoring.svc.cluster.local:8080']
+
+      # ── Container CPU/RAM via cAdvisor (bypasses pod network policies) ────
+      - job_name: kubernetes-cadvisor
+        scheme: https
+        tls_config:
+          insecure_skip_verify: true
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_node_name]
+            target_label: node
+          - target_label: __address__
+            replacement: kubernetes.default.svc:443
+          - source_labels: [__meta_kubernetes_node_name]
+            regex: (.+)
+            target_label: __metrics_path__
+            replacement: /api/v1/nodes/$1/proxy/metrics/cadvisor
+
+      # ── Prometheus self-monitoring ────────────────────────────────────────
+      - job_name: prometheus
+        static_configs:
+          - targets: ['localhost:9090']
+
+  # ── Recording rules: pre-compute expensive per-namespace ratios ──────────
+  quota-usage.yml: |
+    groups:
+      - name: quota_usage
+        interval: 30s
+        rules:
+          - record: namespace:quota_cpu_used_ratio
+            expr: |
+              kube_resourcequota{resource="limits.cpu", type="used"}
+              /
+              kube_resourcequota{resource="limits.cpu", type="hard"}
+
+          - record: namespace:quota_memory_used_ratio
+            expr: |
+              kube_resourcequota{resource="limits.memory", type="used"}
+              /
+              kube_resourcequota{resource="limits.memory", type="hard"}
+
+          - record: namespace:quota_storage_used_ratio
+            expr: |
+              kube_resourcequota{resource="requests.storage", type="used"}
+              /
+              kube_resourcequota{resource="requests.storage", type="hard"}
+
+          - record: namespace:quota_pods_used_ratio
+            expr: |
+              kube_resourcequota{resource="pods", type="used"}
+              /
+              kube_resourcequota{resource="pods", type="hard"}
+
+  # ── Alerting rules: multi-tenancy isolation + lifecycle ──────────────────
+  alerts.yml: |
+    groups:
+      - name: multi_tenancy
+        rules:
+
+          # Administrative Oversight: tenant consuming >80% of CPU quota
+          - alert: TenantCpuQuotaNearLimit
+            expr: namespace:quota_cpu_used_ratio > 0.8
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Namespace {{ $labels.namespace }} CPU quota >80%"
+              description: "{{ $labels.namespace }} used {{ $value | humanizePercentage }} of CPU quota for 5m. Investigate high-usage workloads."
+
+          # Administrative Oversight: tenant consuming >80% of RAM quota
+          - alert: TenantMemoryQuotaNearLimit
+            expr: namespace:quota_memory_used_ratio > 0.8
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Namespace {{ $labels.namespace }} memory quota >80%"
+              description: "{{ $labels.namespace }} used {{ $value | humanizePercentage }} of memory quota for 5m."
+
+          # Isolation Validation: quota HARD limit reached — API server will reject new pods
+          - alert: TenantQuotaHardLimitReached
+            expr: namespace:quota_cpu_used_ratio >= 1 or namespace:quota_memory_used_ratio >= 1
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Namespace {{ $labels.namespace }} quota exhausted"
+              description: "{{ $labels.namespace }} hit its hard ResourceQuota. New pods will be rejected. This confirms isolation is working — no bleed into adjacent namespaces."
+
+          # Isolation Validation: OOMKill detected — kernel enforced cgroup memory limit
+          - alert: ContainerOOMKilled
+            expr: kube_pod_container_status_restarts_total > 0 and on(pod, namespace) kube_pod_container_status_last_terminated_reason{reason="OOMKilled"} == 1
+            for: 0m
+            labels:
+              severity: warning
+            annotations:
+              summary: "OOMKill in {{ $labels.namespace }}/{{ $labels.pod }}"
+              description: "Container {{ $labels.container }} was OOMKilled. Memory limit is enforced. Impact contained to this namespace."
+
+          # Lifecycle Management: orphaned namespace — no running pods for >1h
+          - alert: OrphanedStudentNamespace
+            expr: |
+              (kube_namespace_labels{namespace=~"student-.*"} unless on(namespace)
+               kube_pod_status_phase{phase="Running", namespace=~"student-.*"})
+              * on(namespace) group_left() (
+                (time() - kube_namespace_created{namespace=~"student-.*"}) > 3600
+              )
+            for: 0m
+            labels:
+              severity: info
+            annotations:
+              summary: "Orphaned namespace {{ $labels.namespace }}"
+              description: "{{ $labels.namespace }} has no running pods and is older than 1h. Candidate for de-provisioning."
+
+          # Node-level pressure affecting all tenants
+          - alert: NodeMemoryPressure
+            expr: |
+              1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) > 0.90
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Node {{ $labels.instance }} memory >90%"
+              description: "Node memory pressure may degrade all tenant environments. Check for runaway pods exceeding limits."
