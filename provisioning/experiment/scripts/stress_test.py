@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
 K8s pod stress test — measures CPU & RAM during progressively heavy workloads.
+Jupyter-mode: all allocations kept alive across scenarios (no GC between "cells").
 
 Scenarios (in order):
   1. DB aggregate queries (join depth 4-5)
   2. pandas load + groupby + correlation
   3. NumPy matmul / FFT / SVD
   4. matplotlib multi-panel plot
+  5. extreme memory stress (OOM target)
 
-Output: /tmp/stress_results.json + /tmp/stress_plot.png
+Output: /tmp/stress_results.json + /tmp/stress_plot.png + /tmp/checkpoint_*.png
 
 Run inside Jupyter:
   %run /home/jovyan/scripts/stress_test.py
@@ -42,6 +44,10 @@ DATABASE_URL = os.getenv(
 
 RESULTS: list[dict] = []
 
+# Jupyter-style kernel namespace: nothing is ever freed between "cells".
+# Append every allocation here so GC cannot reclaim it.
+_LIVE_REFS: list = []
+
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -60,7 +66,6 @@ def measure(label: str):
             self._proc = psutil.Process()
             self._t0   = time.perf_counter()
             self._mem0 = self._proc.memory_info().rss / 1024 / 1024
-            # prime cpu_percent so first call returns meaningful value
             self._proc.cpu_percent(interval=None)
             return self
 
@@ -86,6 +91,46 @@ def measure(label: str):
     return _Ctx()
 
 
+def _save_utilization_chart(suffix: str = ""):
+    labels   = [r["label"] for r in RESULTS]
+    cpu_vals = [r.get("cpu_pct", 0) for r in RESULTS]
+    mem_vals = [r["mem_end_mb"] for r in RESULTS]
+    x = range(len(labels))
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
+
+    ax1.bar(x, cpu_vals, color="steelblue")
+    ax1.set_ylabel("CPU %")
+    ax1.set_title("CPU Usage per Phase")
+    for i, v in enumerate(cpu_vals):
+        ax1.text(i, v + 0.5, f"{v:.1f}%", ha="center", fontsize=7)
+
+    ax2.bar(x, mem_vals, color="darkorange")
+    ax2.set_ylabel("RSS (MB)")
+    ax2.set_title("Memory (RSS) per Phase — cumulative (Jupyter-style, no GC between cells)")
+    ax2.set_xticks(list(x))
+    ax2.set_xticklabels(labels, rotation=45, ha="right", fontsize=8)
+    for i, v in enumerate(mem_vals):
+        ax2.text(i, v + 1, f"{v:.0f}", ha="center", fontsize=7)
+
+    plt.tight_layout()
+    path = f"/tmp/utilization_chart{suffix}.png"
+    plt.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Utilization chart → {path}")
+
+
+def _save_checkpoint(scenario: str):
+    """Save updated utilization chart before starting a new scenario."""
+    if not RESULTS:
+        return
+    _save_utilization_chart(suffix=f"_before_{scenario}")
+    # Always overwrite the latest snapshot so the user has one stable path to watch.
+    _save_utilization_chart(suffix="_latest")
+    rss = psutil.Process().memory_info().rss / 1024 / 1024
+    print(f"[checkpoint] before={scenario}  live_refs={len(_LIVE_REFS)}  RSS={rss:.0f} MB")
+
+
 # ── scenario 1: database queries ─────────────────────────────────────────────
 
 def run_db_scenarios(conn):
@@ -104,7 +149,7 @@ def run_db_scenarios(conn):
             GROUP  BY d.name
             ORDER  BY avg_pct DESC
         """)
-        cur.fetchall()
+        _LIVE_REFS.append(cur.fetchall())
 
     with measure("db_course_stats_join5"):
         cur = conn.cursor()
@@ -123,7 +168,7 @@ def run_db_scenarios(conn):
             GROUP  BY c.course_name, d.name
             ORDER  BY avg_final DESC NULLS LAST
         """)
-        cur.fetchall()
+        _LIVE_REFS.append(cur.fetchall())
 
     with measure("db_top_students_cte"):
         cur = conn.cursor()
@@ -147,7 +192,7 @@ def run_db_scenarios(conn):
             ORDER  BY avg_score DESC
             LIMIT  200
         """)
-        cur.fetchall()
+        _LIVE_REFS.append(cur.fetchall())
 
     with measure("db_assignment_difficulty"):
         cur = conn.cursor()
@@ -166,7 +211,7 @@ def run_db_scenarios(conn):
             ORDER  BY AVG(s.score) / NULLIF(a.max_score,0) ASC
             LIMIT  50
         """)
-        cur.fetchall()
+        _LIVE_REFS.append(cur.fetchall())
 
     with measure("db_window_func_running_avg"):
         cur = conn.cursor()
@@ -188,7 +233,7 @@ def run_db_scenarios(conn):
             ORDER BY student_id, submitted_at
             LIMIT 50000
         """)
-        cur.fetchall()
+        _LIVE_REFS.append(cur.fetchall())
 
 
 # ── scenario 2: pandas ────────────────────────────────────────────────────────
@@ -218,33 +263,38 @@ def run_pandas_scenarios(conn) -> pd.DataFrame:
         """)
         cols = [desc[0] for desc in cur.description]
         df = pd.DataFrame(cur.fetchall(), columns=cols)
+        _LIVE_REFS.append(df)
 
     with measure("pandas_feature_engineering"):
         df["score_pct"] = df["score"] / df["max_score_snapshot"].replace(0, np.nan) * 100
         df["submitted_at"] = pd.to_datetime(df["submitted_at"])
         df["submit_hour"]  = df["submitted_at"].dt.hour
         df["submit_dow"]   = df["submitted_at"].dt.dayofweek
+        # df is already in _LIVE_REFS — mutations are reflected automatically
 
     with measure("pandas_groupby_agg"):
-        _ = df.groupby(["dept", "assign_type"]).agg(
-            avg_score  =("score_pct",   "mean"),
-            median     =("score_pct",   "median"),
-            std        =("score_pct",   "std"),
+        grouped = df.groupby(["dept", "assign_type"]).agg(
+            avg_score  =("score_pct",    "mean"),
+            median     =("score_pct",    "median"),
+            std        =("score_pct",    "std"),
             count      =("submission_id","count"),
-            late_rate  =("is_late",     "mean"),
-            avg_gpa    =("gpa",         "mean"),
+            late_rate  =("is_late",      "mean"),
+            avg_gpa    =("gpa",          "mean"),
         ).reset_index()
+        _LIVE_REFS.append(grouped)
 
     with measure("pandas_pivot_table"):
-        _ = df.pivot_table(
+        pivot = df.pivot_table(
             index="dept", columns="assign_type",
             values="score_pct", aggfunc="mean",
         )
+        _LIVE_REFS.append(pivot)
 
     with measure("pandas_corr_matrix"):
         numeric_cols = ["score_pct", "final_score", "gpa", "year_level",
                         "weight", "credits", "submit_hour"]
         corr = df[numeric_cols].dropna().corr()
+        _LIVE_REFS.append(corr)
 
     with measure("pandas_resample_timeseries"):
         ts = (
@@ -254,6 +304,7 @@ def run_pandas_scenarios(conn) -> pd.DataFrame:
             .resample("1D")
             .agg(["mean", "count"])
         )
+        _LIVE_REFS.append(ts)
 
     return df
 
@@ -263,30 +314,36 @@ def run_pandas_scenarios(conn) -> pd.DataFrame:
 def run_numpy_scenarios(df: pd.DataFrame):
     print("\n=== NUMPY ===")
     scores = df["score_pct"].fillna(50).to_numpy(dtype=np.float64)
+    _LIVE_REFS.append(scores)
 
     with measure("numpy_matmul_1000x1000"):
         A = np.random.randn(1_000, 1_000).astype(np.float64)
         B = np.random.randn(1_000, 1_000).astype(np.float64)
-        _ = A @ B
+        C = A @ B
+        _LIVE_REFS.extend([A, B, C])
 
     with measure("numpy_fft_100k"):
-        _ = np.fft.fft(scores)
+        fft_out = np.fft.fft(scores)
+        _LIVE_REFS.append(fft_out)
 
     with measure("numpy_svd_500x200"):
         n = (min(len(scores), 100_000) // 200) * 200
         M = scores[:n].reshape(-1, 200)
-        _ = np.linalg.svd(M, full_matrices=False)
+        U, s, Vt = np.linalg.svd(M, full_matrices=False)
+        _LIVE_REFS.extend([M, U, s, Vt])
 
     with measure("numpy_eig_500x500"):
         S = np.random.randn(500, 500)
-        S = S @ S.T  # symmetric
-        _ = np.linalg.eigvalsh(S)
+        S = S @ S.T
+        eigs = np.linalg.eigvalsh(S)
+        _LIVE_REFS.extend([S, eigs])
 
     with measure("numpy_bootstrap_ci"):
         rng = np.random.default_rng(0)
-        means = [rng.choice(scores, size=10_000, replace=True).mean()
-                 for _ in range(2_000)]
+        means = np.array([rng.choice(scores, size=10_000, replace=True).mean()
+                          for _ in range(2_000)])
         ci = np.percentile(means, [2.5, 97.5])
+        _LIVE_REFS.extend([means, ci])
 
 
 # ── scenario 4: matplotlib ────────────────────────────────────────────────────
@@ -297,25 +354,21 @@ def run_matplotlib_scenarios(df: pd.DataFrame):
     with measure("matplotlib_6panel_plot"):
         fig, axes = plt.subplots(2, 3, figsize=(16, 10))
 
-        # 1. score distribution
         axes[0, 0].hist(df["score_pct"].dropna(), bins=60,
                         color="steelblue", edgecolor="white", alpha=0.8)
         axes[0, 0].set_title("Score Distribution (%)")
         axes[0, 0].set_xlabel("Score (%)")
 
-        # 2. avg score by dept
         dept_avg = df.groupby("dept")["score_pct"].mean().sort_values()
         axes[0, 1].barh(dept_avg.index, dept_avg.values, color="coral")
         axes[0, 1].set_title("Avg Score by Department")
         axes[0, 1].set_xlabel("Avg Score (%)")
 
-        # 3. assignment type distribution
         type_counts = df["assign_type"].value_counts()
         axes[0, 2].pie(type_counts.values, labels=type_counts.index,
                        autopct="%1.1f%%", startangle=90)
         axes[0, 2].set_title("Assignment Types")
 
-        # 4. GPA vs score scatter (sample 5k)
         _pool  = df.dropna(subset=["gpa", "score_pct"])
         sample = _pool.sample(min(5_000, len(_pool)), random_state=0)
         axes[1, 0].scatter(sample["gpa"], sample["score_pct"],
@@ -324,14 +377,12 @@ def run_matplotlib_scenarios(df: pd.DataFrame):
         axes[1, 0].set_xlabel("GPA")
         axes[1, 0].set_ylabel("Score (%)")
 
-        # 5. late submission rate by hour
         late_by_hour = df.groupby("submit_hour")["is_late"].mean()
         axes[1, 1].bar(late_by_hour.index, late_by_hour.values, color="salmon")
         axes[1, 1].set_title("Late Rate by Submit Hour")
         axes[1, 1].set_xlabel("Hour of Day")
         axes[1, 1].set_ylabel("Late Rate")
 
-        # 6. correlation heatmap
         numeric_cols = ["score_pct", "final_score", "gpa", "year_level", "weight"]
         corr = df[numeric_cols].dropna().corr()
         im = axes[1, 2].imshow(corr.values, cmap="coolwarm", vmin=-1, vmax=1)
@@ -344,7 +395,9 @@ def run_matplotlib_scenarios(df: pd.DataFrame):
 
         plt.tight_layout()
         plt.savefig("/tmp/stress_plot.png", dpi=150, bbox_inches="tight")
-        plt.close()
+        # Keep figure alive — Jupyter inline display holds figure objects in kernel.
+        _LIVE_REFS.append(fig)
+        _LIVE_REFS.extend([axes, dept_avg, type_counts, sample, late_by_hour, corr])
         print("  Plot saved → /tmp/stress_plot.png")
 
 
@@ -370,8 +423,10 @@ def print_summary():
         f"\nBase RSS: {base_mem:.0f} MB  |  Peak RSS: {peak_mem:.0f} MB  |  "
         f"Δ: {peak_mem-base_mem:.0f} MB  |  Peak CPU: {peak_cpu:.1f}%"
     )
+    print(f"Live refs held: {len(_LIVE_REFS)}  (Jupyter-style: none freed)")
 
     _save_utilization_chart()
+    _save_utilization_chart(suffix="_latest")
 
     print("\nFor cluster-level metrics run:")
     print("  kubectl top pods -n jupyter-experiment")
@@ -382,82 +437,41 @@ def print_summary():
     print("\nJSON results → /tmp/stress_results.json")
 
 
-def _save_utilization_chart():
-    labels   = [r["label"] for r in RESULTS]
-    cpu_vals = [r.get("cpu_pct", 0) for r in RESULTS]
-    mem_vals = [r["mem_end_mb"] for r in RESULTS]
-    x = range(len(labels))
-
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
-
-    ax1.bar(x, cpu_vals, color="steelblue")
-    ax1.set_ylabel("CPU %")
-    ax1.set_title("CPU Usage per Phase")
-    for i, v in enumerate(cpu_vals):
-        ax1.text(i, v + 0.5, f"{v:.1f}%", ha="center", fontsize=7)
-
-    ax2.bar(x, mem_vals, color="darkorange")
-    ax2.set_ylabel("RSS (MB)")
-    ax2.set_title("Memory (RSS) per Phase")
-    ax2.set_xticks(list(x))
-    ax2.set_xticklabels(labels, rotation=45, ha="right", fontsize=8)
-    for i, v in enumerate(mem_vals):
-        ax2.text(i, v + 1, f"{v:.0f}", ha="center", fontsize=7)
-
-    plt.tight_layout()
-    plt.savefig("/tmp/utilization_chart.png", dpi=150, bbox_inches="tight")
-    plt.close()
-    print("  Utilization chart → /tmp/utilization_chart.png")
-
-
 # ── scenario 5: extreme memory stress ────────────────────────────────────────
-# Goal: exceed 4Gi pod limit → OOM kill.
-# Each phase holds allocations alive (no del between phases) so RSS climbs.
 
 def run_extreme_stress(df: pd.DataFrame):
     print("\n=== EXTREME MEMORY STRESS (target: OOM @ 4Gi) ===")
-    _graveyard = []  # intentionally never freed — keeps all phases in memory
+    # Reuses _LIVE_REFS — all prior allocations already pinned above.
 
-    # Phase 1: giant matmul — hold A, B, C simultaneously (~1.2 GB)
-    # 7000×7000 float64 = 392 MB each; A+B+C+BLAS working ≈ 1.5–2 GB
     with measure("extreme_matmul_7000x7000"):
         A = np.random.randn(7_000, 7_000).astype(np.float64)
         B = np.random.randn(7_000, 7_000).astype(np.float64)
         C = A @ B
-        _graveyard.extend([A, B, C])
+        _LIVE_REFS.extend([A, B, C])
 
-    # Phase 2: full SVD on 6000×6000 — U+s+Vt+working ≈ 1.5 GB spike on top
     with measure("extreme_svd_6000x6000"):
         M = np.random.randn(6_000, 6_000).astype(np.float64)
         U, s, Vt = np.linalg.svd(M, full_matrices=True)
-        _graveyard.extend([M, U, s, Vt])
+        _LIVE_REFS.extend([M, U, s, Vt])
 
-    # Phase 3: pandas tile explosion — replicate full df 40× in memory
-    # 100k rows × 40 = 4M rows; with mixed dtypes ≈ 2–4 GB
     with measure("extreme_pandas_tile_40x"):
         big_df = pd.concat([df] * 40, ignore_index=True)
-        _graveyard.append(big_df)
+        _LIVE_REFS.append(big_df)
         print(f"    tiled df shape: {big_df.shape}")
 
-    # Phase 4: cross-join 4k×4k = 16M row cartesian product
-    # two numeric columns × 16M rows × ~16 bytes ≈ 250 MB minimum,
-    # but pandas cross merge builds full object array → 2–5 GB
     with measure("extreme_cross_join_4k"):
         chunk = df[["score_pct", "gpa"]].dropna().head(4_000).reset_index(drop=True)
         chunk["_key"] = 1
         exploded = chunk.merge(chunk, on="_key", suffixes=("_l", "_r")).drop(columns="_key")
-        _graveyard.append(exploded)
+        _LIVE_REFS.append(exploded)
         print(f"    cross-join shape: {exploded.shape}")
 
-    # Phase 5: incremental slab accumulator — alloc 512 MB chunks until OOM
-    # This is the kill shot: adds on top of everything already held above.
-    # Pod OOM-killed mid-loop; measure() __exit__ may never run — that's expected.
     with measure("extreme_oom_slab_accumulator"):
-        SLAB_BYTES = 512 * 1024 * 1024          # 512 MB per slab
-        SLAB_ELEMS = SLAB_BYTES // 8             # float64
+        SLAB_BYTES = 512 * 1024 * 1024
+        SLAB_ELEMS = SLAB_BYTES // 8
         slab_n = 0
         while True:
-            _graveyard.append(np.ones(SLAB_ELEMS, dtype=np.float64))
+            _LIVE_REFS.append(np.ones(SLAB_ELEMS, dtype=np.float64))
             slab_n += 1
             used_mb = psutil.Process().memory_info().rss / 1024 / 1024
             print(f"    slab {slab_n}: +512 MB  total RSS {used_mb:.0f} MB", flush=True)
@@ -469,16 +483,24 @@ def main():
     print(f"Connecting to: {DATABASE_URL.split('@')[-1]}")
     conn = _conn()
 
+    # Checkpoint saved before each scenario so plots reflect state at entry.
+    _save_checkpoint("db")
     run_db_scenarios(conn)
+
+    _save_checkpoint("pandas")
     df = run_pandas_scenarios(conn)
+
+    _save_checkpoint("numpy")
     run_numpy_scenarios(df)
+
+    _save_checkpoint("matplotlib")
     run_matplotlib_scenarios(df)
 
     conn.close()
-    # print_summary intentionally before extreme stress so results are saved
-    # even if the pod is OOM-killed during extreme phase
+    # Summary + charts saved before extreme stress — in case OOM-kill happens mid-run.
     print_summary()
 
+    _save_checkpoint("extreme")
     run_extreme_stress(df)
 
 
