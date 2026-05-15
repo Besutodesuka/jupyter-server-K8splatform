@@ -70,6 +70,6 @@ spec:
     - to:
         - namespaceSelector:
             matchLabels:
-              app: jupyter-experiment
+              kubernetes.io/metadata.name: jupyter-experiment
       ports:
         - port: 5432

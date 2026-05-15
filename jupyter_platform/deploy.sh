@@ -42,14 +42,53 @@ fi
 
 # ── Optional reset ─────────────────────────────────────────────────────────────
 if [[ "$RESET" == "true" ]]; then
-  echo "▶ [1/5] Deleting existing portal namespace ..."
+  echo "▶ [1/7] Deleting existing portal namespace ..."
   kubectl delete namespace jupyter-platform --ignore-not-found
   echo "  Done."
 fi
 
+# ── Deploy shared Postgres database (jupyter-experiment namespace) ─────────────
+echo "▶ [2/7] Deploying shared Postgres database ..."
+for f in "$DIR/k8s/database"/0[0-5]*.yaml; do
+  if [[ "$(basename "$f")" == "01-pvc.yaml" ]]; then
+    sed "s/storageClassName: standard/storageClassName: ${STORAGE_CLASS}/" "$f" \
+      | kubectl apply -f -
+    echo "  applied 01-pvc.yaml  (STORAGE_CLASS=${STORAGE_CLASS})"
+  else
+    kubectl apply -f "$f"
+    echo "  applied $(basename "$f")"
+  fi
+done
+
+# ── Wait for Postgres to be ready ─────────────────────────────────────────────
+echo "▶ [3/7] Waiting for Postgres to be ready (up to 3 min) ..."
+kubectl wait --for=condition=available deployment/postgres \
+  -n jupyter-experiment \
+  --timeout=180s
+
+# ── Seed database (skip if already populated) ─────────────────────────────────
+echo "▶ [4/7] Checking if database needs seeding ..."
+SUB_COUNT=$(kubectl exec -n jupyter-experiment deployment/postgres -- \
+  psql -U courseuser -d coursedb -tAc \
+  "SELECT COUNT(*) FROM submissions" 2>/dev/null | tr -d ' \n' || echo "0")
+
+if [[ "$SUB_COUNT" -eq "0" ]]; then
+  echo "  Seeding database (~100k rows, takes 2–4 min) ..."
+  kubectl apply -f "$DIR/k8s/database/06-configmap-seed.yaml"
+  # Delete stale job if present (e.g. after --reset)
+  kubectl delete job seed-coursedb -n jupyter-experiment --ignore-not-found
+  kubectl apply -f "$DIR/k8s/database/07-job-seed.yaml"
+  kubectl wait --for=condition=complete job/seed-coursedb \
+    -n jupyter-experiment \
+    --timeout=600s
+  echo "  Seeding complete."
+else
+  echo "  Database already has ${SUB_COUNT} submissions — skipping seed."
+fi
+
 # ── Apply portal infrastructure (manifests 00–08) ─────────────────────────────
-echo "▶ [2/5] Applying portal manifests ..."
-for f in "$DIR/k8s"/[0-9][0-9]-*.yaml; do
+echo "▶ [5/7] Applying portal manifests ..."
+for f in "$DIR/k8s"/0[0-8]*.yaml; do
   # Patch StorageClass env var into the provisioner Deployment on the fly
   if [[ "$(basename "$f")" == "07-deployment.yaml" ]]; then
     sed "s/value: \"standard\"/value: \"${STORAGE_CLASS}\"/" "$f" \
@@ -62,7 +101,7 @@ for f in "$DIR/k8s"/[0-9][0-9]-*.yaml; do
 done
 
 # ── Generate Helm chart ConfigMaps from source ─────────────────────────────────
-echo "▶ [3/5] Syncing Helm chart ConfigMaps from chart/ ..."
+echo "▶ [6/7] Syncing Helm chart ConfigMaps from chart/ ..."
 
 kubectl create configmap helm-chart-meta \
   -n jupyter-platform \
@@ -86,7 +125,7 @@ kubectl create configmap helm-chart-templates \
 echo "  synced helm-chart-templates"
 
 # ── Wait for provisioner to be ready ──────────────────────────────────────────
-echo "▶ [4/5] Waiting for provisioner pod to be ready (up to 5 min) ..."
+echo "▶ [7/7] Waiting for provisioner pod to be ready (up to 5 min) ..."
 kubectl wait --for=condition=ready pod \
   -l app=provisioner \
   -n jupyter-platform \
@@ -98,7 +137,7 @@ NODE_IP=$(kubectl get nodes \
   2>/dev/null || echo "localhost")
 
 echo ""
-echo "▶ [5/5] Portal ready."
+echo "▶ Portal ready."
 echo ""
 echo "════════════════════════════════════════════════════════"
 echo " STUDENT PORTAL"

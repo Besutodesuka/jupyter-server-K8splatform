@@ -1,0 +1,355 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: seed-scripts
+  namespace: jupyter-experiment
+data:
+  generate_data.py: |
+    #!/usr/bin/env python3
+    import argparse
+    import random
+    import time
+    from datetime import datetime
+    import psycopg2
+    from psycopg2.extras import execute_values
+    from faker import Faker
+
+    fake = Faker()
+    random.seed(42)
+    Faker.seed(42)
+
+    DEPARTMENTS = [
+        ("Computer Science",   "CS",   "Faculty of Engineering"),
+        ("Mathematics",        "MATH", "Faculty of Science"),
+        ("Physics",            "PHYS", "Faculty of Science"),
+        ("Biology",            "BIO",  "Faculty of Science"),
+        ("Chemistry",          "CHEM", "Faculty of Science"),
+        ("Economics",          "ECON", "Faculty of Business"),
+        ("Psychology",         "PSYC", "Faculty of Social Sciences"),
+        ("History",            "HIST", "Faculty of Humanities"),
+        ("Literature",         "LIT",  "Faculty of Humanities"),
+        ("Statistics",         "STAT", "Faculty of Science"),
+    ]
+
+    ASSIGNMENT_TYPES = ["homework", "quiz", "midterm", "final", "project", "lab"]
+    GRADE_MAP = [(90,"A+"),(85,"A"),(80,"A-"),(75,"B+"),(70,"B"),(65,"B-"),(60,"C+"),(55,"C"),(50,"C-"),(0,"F")]
+
+    N_STUDENTS    = 2_000
+    N_INSTRUCTORS = 50
+    N_COURSES     = 200
+    AVG_ENROLL    = 8
+    AVG_ASSIGN    = 8
+    TARGET_SUBS   = 100_000
+    BATCH         = 1_000
+
+
+    def score_to_grade(score):
+        for threshold, grade in GRADE_MAP:
+            if score >= threshold:
+                return grade
+        return "F"
+
+
+    def connect(args):
+        return psycopg2.connect(
+            host=args.host, port=args.port,
+            dbname=args.db, user=args.user, password=args.password,
+        )
+
+
+    def truncate_all(cur):
+        cur.execute("""
+            TRUNCATE TABLE submissions, assignments, enrollments,
+                           courses, students, instructors, departments
+            RESTART IDENTITY CASCADE
+        """)
+
+
+    def seed_departments(cur):
+        rows = [(n, c, f) for n, c, f in DEPARTMENTS]
+        execute_values(cur, "INSERT INTO departments (name, code, faculty) VALUES %s", rows)
+        cur.execute("SELECT department_id FROM departments ORDER BY department_id")
+        return [r[0] for r in cur.fetchall()]
+
+
+    def seed_instructors(cur, dept_ids):
+        rows = [
+            (fake.first_name(), fake.last_name(), fake.unique.email(), random.choice(dept_ids),
+             random.choice(["Prof.", "Dr.", "Assoc. Prof.", "Asst. Prof.", "Lecturer"]))
+            for _ in range(N_INSTRUCTORS)
+        ]
+        execute_values(cur, """
+            INSERT INTO instructors (first_name, last_name, email, department_id, title)
+            VALUES %s RETURNING instructor_id
+        """, rows)
+        return [r[0] for r in cur.fetchall()]
+
+
+    def seed_students(cur, dept_ids):
+        rows = []
+        for _ in range(N_STUDENTS):
+            rows.append((
+                fake.first_name(),
+                fake.last_name(),
+                fake.unique.email(),
+                fake.date_of_birth(minimum_age=17, maximum_age=32),
+                fake.date_between(start_date="-4y", end_date="today"),
+                random.choice(dept_ids),
+                random.randint(1, 4),
+                round(random.uniform(1.5, 4.0), 2),
+                random.choices(
+                    ["active", "graduated", "withdrawn", "suspended"],
+                    weights=[70, 20, 7, 3]
+                )[0],
+            ))
+        execute_values(cur, """
+            INSERT INTO students
+                (first_name, last_name, email, date_of_birth, enrollment_date,
+                 department_id, year_level, gpa, status)
+            VALUES %s RETURNING student_id
+        """, rows)
+        return [r[0] for r in cur.fetchall()]
+
+
+    def seed_courses(cur, dept_ids, inst_ids):
+        rows = []
+        for i in range(N_COURSES):
+            di = random.randrange(len(DEPARTMENTS))
+            code = f"{DEPARTMENTS[di][1]}{random.randint(100,499):03d}-{i}"
+            rows.append((
+                code,
+                fake.catch_phrase()[:100],
+                dept_ids[di],
+                random.randint(1, 4),
+                random.choice(inst_ids),
+                random.randint(20, 60),
+                fake.text(max_nb_chars=200),
+                random.choice(["Spring", "Summer", "Fall"]),
+                random.randint(2021, 2025),
+            ))
+        execute_values(cur, """
+            INSERT INTO courses
+                (course_code, course_name, department_id, credits, instructor_id,
+                 max_students, description, semester, academic_year)
+            VALUES %s RETURNING course_id
+        """, rows)
+        return [r[0] for r in cur.fetchall()]
+
+
+    def seed_enrollments(cur, conn, student_ids, course_ids):
+        seen = set()
+        rows = []
+        for sid in student_ids:
+            n = max(1, round(random.gauss(AVG_ENROLL, 2)))
+            for cid in random.sample(course_ids, min(n, len(course_ids))):
+                if (sid, cid) in seen:
+                    continue
+                seen.add((sid, cid))
+                score = round(random.betavariate(5, 2) * 100, 2)
+                rows.append((
+                    sid, cid,
+                    fake.date_time_between(start_date="-2y", end_date="now"),
+                    score_to_grade(score),
+                    score,
+                    random.choices(
+                        ["enrolled", "completed", "dropped", "failed"],
+                        weights=[30, 50, 15, 5]
+                    )[0],
+                ))
+
+        ids = []
+        for i in range(0, len(rows), BATCH):
+            execute_values(cur, """
+                INSERT INTO enrollments
+                    (student_id, course_id, enrolled_at, final_grade, final_score, status)
+                VALUES %s RETURNING enrollment_id
+            """, rows[i:i+BATCH])
+            ids.extend(r[0] for r in cur.fetchall())
+        conn.commit()
+        return ids
+
+
+    def seed_assignments(cur, conn, course_ids):
+        rows = []
+        for cid in course_ids:
+            n = max(2, round(random.gauss(AVG_ASSIGN, 2)))
+            for j in range(n):
+                atype = random.choice(ASSIGNMENT_TYPES)
+                max_score = 100 if atype in ("midterm", "final") else random.choice([10, 20, 25, 50, 100])
+                rows.append((
+                    cid,
+                    f"{atype.title()} {j+1} — {fake.bs()[:50]}",
+                    fake.text(max_nb_chars=300),
+                    atype,
+                    fake.date_time_between(start_date="-1y", end_date="+3m"),
+                    max_score,
+                    round(random.uniform(5, 30), 2),
+                ))
+
+        ids = []
+        for i in range(0, len(rows), BATCH):
+            execute_values(cur, """
+                INSERT INTO assignments
+                    (course_id, title, description, type, due_date, max_score, weight)
+                VALUES %s RETURNING assignment_id
+            """, rows[i:i+BATCH])
+            ids.extend(r[0] for r in cur.fetchall())
+        conn.commit()
+        return ids
+
+
+    def _flush(cur, conn, batch, total):
+        execute_values(cur, """
+            INSERT INTO submissions
+                (enrollment_id, assignment_id, submitted_at, score,
+                 max_score_snapshot, feedback, is_late, attempt_number)
+            VALUES %s ON CONFLICT DO NOTHING
+        """, batch)
+        conn.commit()
+        print(f"  {total:>7,} / {TARGET_SUBS:,} submissions", flush=True)
+        return 0
+
+
+    def _make_row(eid, aid, ms, attempt):
+        score = round(random.betavariate(5, 2) * ms, 2)
+        return (
+            eid, aid,
+            fake.date_time_between(start_date="-1y", end_date="now"),
+            score, ms,
+            fake.sentence() if random.random() < 0.3 else None,
+            random.random() < 0.1,
+            attempt,
+        )
+
+
+    def seed_submissions(cur, conn, enroll_ids):
+        cur.execute("SELECT assignment_id, course_id, max_score FROM assignments")
+        assign_info = {r[0]: (r[1], float(r[2])) for r in cur.fetchall()}
+
+        cur.execute("SELECT enrollment_id, course_id FROM enrollments")
+        enroll_course = {r[0]: r[1] for r in cur.fetchall()}
+
+        course_assigns = {}
+        for aid, (cid, ms) in assign_info.items():
+            course_assigns.setdefault(cid, []).append((aid, ms))
+
+        attempt_tracker = {}
+        batch = []
+        total = 0
+
+        for eid in enroll_ids:
+            if total >= TARGET_SUBS:
+                break
+            cid = enroll_course.get(eid)
+            assigns = course_assigns.get(cid, [])
+            if not assigns:
+                continue
+            n_submit = max(1, round(random.gauss(len(assigns) * 0.85, 1)))
+            for aid, ms in random.sample(assigns, min(n_submit, len(assigns))):
+                if total >= TARGET_SUBS:
+                    break
+                key = (eid, aid)
+                attempt_tracker[key] = 1
+                batch.append(_make_row(eid, aid, ms, 1))
+                total += 1
+                if len(batch) >= BATCH:
+                    _flush(cur, conn, batch, total)
+                    batch = []
+
+        if batch:
+            _flush(cur, conn, batch, total)
+            batch = []
+
+        if total < TARGET_SUBS:
+            print(f"\n  Pass 1 yielded {total:,}. Topping up to {TARGET_SUBS:,} ...", flush=True)
+            pool = []
+            for eid in enroll_ids:
+                cid = enroll_course.get(eid)
+                for aid, ms in course_assigns.get(cid, []):
+                    pool.append((eid, aid, ms))
+
+            pool_idx = 0
+            while total < TARGET_SUBS:
+                eid, aid, ms = pool[pool_idx % len(pool)]
+                key = (eid, aid)
+                attempt = attempt_tracker.get(key, 0) + 1
+                attempt_tracker[key] = attempt
+                batch.append(_make_row(eid, aid, ms, attempt))
+                total += 1
+                pool_idx += 1
+                if len(batch) >= BATCH:
+                    _flush(cur, conn, batch, total)
+                    batch = []
+
+            if batch:
+                _flush(cur, conn, batch, total)
+
+        return total
+
+
+    def main():
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--host",     default="postgres-service")
+        parser.add_argument("--port",     type=int, default=5432)
+        parser.add_argument("--db",       default="coursedb")
+        parser.add_argument("--user",     default="courseuser")
+        parser.add_argument("--password", default="coursepass123")
+        args = parser.parse_args()
+
+        t0 = time.time()
+        print(f"Connecting to {args.host}:{args.port}/{args.db} ...", flush=True)
+        conn = connect(args)
+        cur = conn.cursor()
+
+        cur.execute("SELECT COUNT(*) FROM submissions")
+        existing = cur.fetchone()[0]
+        if existing > 0:
+            print(f"Database already has {existing:,} submissions — skipping seed.")
+            cur.close(); conn.close(); return
+
+        print("Truncating existing data ...", flush=True)
+        truncate_all(cur)
+        conn.commit()
+
+        print("Seeding departments ...", flush=True)
+        dept_ids = seed_departments(cur); conn.commit()
+        print(f"  {len(dept_ids)} departments")
+
+        print("Seeding instructors ...", flush=True)
+        inst_ids = seed_instructors(cur, dept_ids); conn.commit()
+        print(f"  {len(inst_ids)} instructors")
+
+        print("Seeding students ...", flush=True)
+        student_ids = seed_students(cur, dept_ids); conn.commit()
+        print(f"  {len(student_ids)} students")
+
+        print("Seeding courses ...", flush=True)
+        course_ids = seed_courses(cur, dept_ids, inst_ids); conn.commit()
+        print(f"  {len(course_ids)} courses")
+
+        print("Seeding enrollments ...", flush=True)
+        enroll_ids = seed_enrollments(cur, conn, student_ids, course_ids)
+        print(f"  {len(enroll_ids):,} enrollments")
+
+        print("Seeding assignments ...", flush=True)
+        assign_ids = seed_assignments(cur, conn, course_ids)
+        print(f"  {len(assign_ids):,} assignments")
+
+        print(f"Seeding submissions (target {TARGET_SUBS:,}) ...", flush=True)
+        total = seed_submissions(cur, conn, enroll_ids)
+        print(f"\n  {total:,} submissions inserted")
+
+        tables = ["departments", "instructors", "students", "courses",
+                  "enrollments", "assignments", "submissions"]
+        print("\nRow counts:")
+        for t in tables:
+            cur.execute(f"SELECT COUNT(*) FROM {t}")
+            print(f"  {t:<25} {cur.fetchone()[0]:>10,}")
+
+        cur.close()
+        conn.close()
+        print(f"\nDone in {time.time()-t0:.1f}s", flush=True)
+
+
+    if __name__ == "__main__":
+        main()

@@ -2,6 +2,85 @@
 
 A multi-tenant JupyterLab platform on Kubernetes where each student gets an isolated, resource-capped environment for coursework.
 
+## Architecture
+
+```mermaid
+graph TB
+      User(["Student / Admin"])
+
+      subgraph Cluster["Kubernetes Cluster - 1 Bare-Metal Server"]
+
+          subgraph Entry["Entry Layer  (jupyter-platform namespace)"]
+              NGINX["NGINX Reverse Proxy\n(in provisioner pod\nNodePort 30080)"]
+              CGI["provision.cgi\n(CGI bash + fcgiwrap)"]
+              NGINX -->|"POST /cgi-bin/provision.cgi"| CGI
+          end
+
+          subgraph SelfService["Self-Service Provisioning"]
+              HelmInMem["Helm Chart\n(templates reconstructed\nfrom ConfigMaps at startup)"]
+              CGI -->|"helm upgrade --install\n--create-namespace"| HelmInMem
+          end
+
+          subgraph ControlPlane["Control Plane (pre-existing k8s components)"]
+              KubeAPI["kube-APIServer"]
+              Sched["kube-scheduler"]
+              CtrlMgr["kube-controller-manager"]
+          end
+
+          subgraph RBAC["jupyter-platform ClusterRole"]
+              ProvSA["provisioner ServiceAccount\n+ ClusterRoleBinding\n(ns, quota, pvc, rbac, ss, svc)"]
+          end
+
+          subgraph StudentNS["Namespace: student-&lt;id&gt;  (up to 100 units)"]
+              RQ["ResourceQuota\n1 CPU / 1Gi RAM\n10Gi storage / 5 pods"]
+              LimitR["LimitRange\ndefault per container"]
+              NP["NetworkPolicy  (5
+  rules)\ndefault-deny-ingress\nallow-same-namespace\nallow-nginx-ingress\nallow-egress-dns\nallow-egress-postgres"]
+              JupySS["Jupyter Notebook Pod\n(StatefulSet)\nscipy-notebook:2024-05-27\nport 8888"]
+              RoleB["RoleBinding\nstudent owns only this NS\n(get/list pods, exec, port-forward)"]
+              StudSA["student-&lt;id&gt; ServiceAccount"]
+          end
+
+          subgraph SharedNS["jupyter-experiment namespace  (shared)"]
+              PG["PostgreSQL\n(Deployment — not StatefulSet)\npostgres:15\nlimits: 2 CPU / 2Gi RAM\ncoursedb / courseuser"]
+              PGPVC2["postgres-pvc\n10Gi PVC"]
+          end
+
+          subgraph Storage["Persistent Storage"]
+              PVC["PersistentVolumeClaim\njupyter-workspace-&lt;id&gt;\n10Gi  •  keep on helm uninstall"]
+              SC["StorageClass\nlocal-path (k3s)\n or standard (minikube)\nauto-detected at deploy time"]
+          end
+
+          subgraph DaemonSets["DaemonSets  (all nodes incl. control-plane)"]
+              NodeExp["node-exporter\n(DaemonSet)\nprom/node-exporter:v1.8.1\nhostNetwork + hostPID\nport 9100"]
+          end
+
+          subgraph Observability["Observability  (monitoring namespace  —  Deployments, not StatefulSets)"]
+              KSM["kube-state-metrics\n(Deployment) v2.12.0\nnamespaces, pods, quotas,\nlimitranges, PVCs, statefulsets"]
+              Prom["Prometheus\n(Deployment) v2.52.0\nNodePort 30090\n10Gi PVC • 15-day retention\nrecording rules + 6 alert rules"]
+              Grafana["Grafana\n(Deployment) 10.4.3\nNodePort 30030\nmulti-tenant-overview +\nstudent-drilldown dashboards"]
+          end
+
+      end
+
+      User -->|"HTTP form: student_id (1-100)\nNO authentication"| NGINX
+      NGINX -->|"/student/&lt;id&gt;/*\nWebSocket proxy → ClusterIP svc"| JupySS
+
+      HelmInMem -->|"creates: NS, RQ, LR, NP\nSA, RoleBinding\nStatefulSet, Service, PVC"| StudentNS
+
+      JupySS --> PVC
+      PVC --> SC
+      PGPVC2 --> SC
+
+      JupySS -->|"TCP 5432 egress\ncourseuser@coursedb"| PG
+      PG --> PGPVC2
+
+      NodeExp -->|"node metrics\nport 9100"| Prom
+      KSM -->|"quota / pod / ns metrics\nport 8080"| Prom
+      KSM -.->|"watches"| StudentNS
+      Prom -->|"auto-provisioned\ndatasource"| Grafana
+```
+
 ---
 
 ## Repository Layout
