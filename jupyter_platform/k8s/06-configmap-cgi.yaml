@@ -48,19 +48,29 @@ data:
     STUDENT_ID=$(printf "%03d" "$NUM")
     NAMESPACE="student-${STUDENT_ID}"
     RELEASE="student-${STUDENT_ID}"
+    SEMESTER="${SEMESTER:-2026-spring}"
+    EXPIRES_AT="${EXPIRES_AT:-2026-08-31}"
 
-    # ── Check if already provisioned ──────────────────────────────────────────
-    ALREADY_EXISTS=false
-    if helm status "$RELEASE" -n "$NAMESPACE" &>/dev/null; then
-      ALREADY_EXISTS=true
-    fi
+    # ── Create namespace with lifecycle labels (idempotent) ───────────────────
+    # Must run before Helm so the namespace exists when Helm stores its release
+    # secret. kubectl label --overwrite is idempotent; the lifecycle-controller
+    # reads these labels to know when to suspend the environment.
+    kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml \
+      | kubectl apply -f - 1>&2
+    kubectl label namespace "${NAMESPACE}" \
+      platform=jupyter-student \
+      "student-id=${STUDENT_ID}" \
+      "semester=${SEMESTER}" \
+      "created-at=$(date +%Y-%m-%d)" \
+      "expires-at=${EXPIRES_AT}" \
+      --overwrite 1>&2
 
     # ── Provision via Helm ────────────────────────────────────────────────────
-    # helm upgrade --install is idempotent: installs if new, upgrades if exists.
-    # Do NOT use --create-namespace: chart/templates/namespace.yaml already
-    # creates the namespace with lifecycle labels (platform, expires-at, semester).
-    # Using both causes "namespace already exists" on the second attempt.
-    if [[ "$ALREADY_EXISTS" == "false" ]]; then
+    # Only skip if a previous install fully succeeded (deployed status).
+    # Failed releases are retried so a broken environment can self-heal.
+    HELM_STATUS=$(helm status "$RELEASE" -n "$NAMESPACE" \
+      --output json 2>/dev/null | grep -o '"status":"[^"]*"' | cut -d'"' -f4 || echo "")
+    if [[ "$HELM_STATUS" != "deployed" ]]; then
       helm upgrade --install "$RELEASE" /helm/student-chart \
         --set studentId="${STUDENT_ID}" \
         --set storageClassName="${STORAGE_CLASS:-local-path}" \
