@@ -64,25 +64,29 @@ data:
         rules:
           - record: namespace:quota_cpu_used_ratio
             expr: |
-              kube_resourcequota{resource="limits.cpu", type="used"}
+              (kube_resourcequota{resource="limits.cpu", type="used"}
+              or kube_resourcequota{resource="limits.cpu", type="hard"} * 0)
               /
               kube_resourcequota{resource="limits.cpu", type="hard"}
 
           - record: namespace:quota_memory_used_ratio
             expr: |
-              kube_resourcequota{resource="limits.memory", type="used"}
+              (kube_resourcequota{resource="limits.memory", type="used"}
+              or kube_resourcequota{resource="limits.memory", type="hard"} * 0)
               /
               kube_resourcequota{resource="limits.memory", type="hard"}
 
           - record: namespace:quota_storage_used_ratio
             expr: |
-              kube_resourcequota{resource="requests.storage", type="used"}
+              (kube_resourcequota{resource="requests.storage", type="used"}
+              or kube_resourcequota{resource="requests.storage", type="hard"} * 0)
               /
               kube_resourcequota{resource="requests.storage", type="hard"}
 
           - record: namespace:quota_pods_used_ratio
             expr: |
-              kube_resourcequota{resource="pods", type="used"}
+              (kube_resourcequota{resource="pods", type="used"}
+              or kube_resourcequota{resource="pods", type="hard"} * 0)
               /
               kube_resourcequota{resource="pods", type="hard"}
 
