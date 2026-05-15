@@ -49,7 +49,7 @@ fi
 
 # ── Apply portal infrastructure (manifests 00–08) ─────────────────────────────
 echo "▶ [2/5] Applying portal manifests ..."
-for f in "$DIR/k8s"/0[0-8]*.yaml; do
+for f in "$DIR/k8s"/[0-9][0-9]-*.yaml; do
   # Patch StorageClass env var into the provisioner Deployment on the fly
   if [[ "$(basename "$f")" == "07-deployment.yaml" ]]; then
     sed "s/value: \"standard\"/value: \"${STORAGE_CLASS}\"/" "$f" \
@@ -81,6 +81,7 @@ kubectl create configmap helm-chart-templates \
   --from-file=pvc.yaml="$DIR/chart/templates/pvc.yaml" \
   --from-file=statefulset.yaml="$DIR/chart/templates/statefulset.yaml" \
   --from-file=service.yaml="$DIR/chart/templates/service.yaml" \
+  --from-file=namespace.yaml="$DIR/chart/templates/namespace.yaml" \
   --dry-run=client -o yaml | kubectl apply -f -
 echo "  synced helm-chart-templates"
 

@@ -3,10 +3,10 @@ kind: ClusterRole
 metadata:
   name: student-provisioner
 rules:
-  # Namespace management
+  # Namespace management — patch required for Helm to apply lifecycle labels via namespace.yaml template
   - apiGroups: [""]
     resources: ["namespaces"]
-    verbs: ["create", "get", "list", "delete"]
+    verbs: ["create", "get", "list", "patch", "delete"]
 
   # Per-student namespace resources
   - apiGroups: [""]

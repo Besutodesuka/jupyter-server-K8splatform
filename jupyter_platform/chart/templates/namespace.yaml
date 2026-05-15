@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: student-{{ .Values.studentId }}
+  labels:
+    platform: jupyter-student
+    student-id: {{ .Values.studentId | quote }}
+    semester: {{ .Values.semester | quote }}
+    created-at: {{ now | date "2006-01-02" | quote }}
+    expires-at: {{ .Values.expiresAt | quote }}

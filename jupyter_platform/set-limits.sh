@@ -140,6 +140,7 @@ kubectl create configmap helm-chart-templates \
   --from-file=pvc.yaml="$DIR/chart/templates/pvc.yaml" \
   --from-file=statefulset.yaml="$DIR/chart/templates/statefulset.yaml" \
   --from-file=service.yaml="$DIR/chart/templates/service.yaml" \
+  --from-file=namespace.yaml="$DIR/chart/templates/namespace.yaml" \
   --dry-run=client -o yaml | kubectl apply -f -
 
 echo "  ConfigMaps updated."

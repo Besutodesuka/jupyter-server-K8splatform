@@ -25,3 +25,8 @@ storage: "10Gi"
 
 # k3s: local-path  |  minikube: standard
 storageClassName: local-path
+
+# Lifecycle tracking — read by the lifecycle controller and deprovision.sh.
+# Update these at the start of each semester before running deploy.sh.
+semester: "2026-spring"
+expiresAt: "2026-08-31"

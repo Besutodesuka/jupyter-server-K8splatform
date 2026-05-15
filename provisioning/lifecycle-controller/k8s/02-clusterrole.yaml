@@ -1,0 +1,24 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: lifecycle-controller
+rules:
+  # Watch and patch student namespaces (read expires-at label, write lifecycle-status)
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch", "patch"]
+
+  # List and patch StatefulSets to scale them to 0 on expiry
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    verbs: ["get", "list", "watch", "patch"]
+
+  # Scale subresource — required by kubectl scale and controller-runtime Patch on replicas
+  - apiGroups: ["apps"]
+    resources: ["statefulsets/scale"]
+    verbs: ["get", "update", "patch"]
+
+  # controller-runtime emits Events for audit visibility
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
