@@ -47,7 +47,7 @@ data:
       "title": "Jupyter Platform — Multi-Tenant Overview",
       "uid": "jupyter-mt-overview",
       "schemaVersion": 38,
-      "refresh": "5s",
+      "refresh": "1s",
       "time": { "from": "now-1h", "to": "now" },
       "panels": [
         {
@@ -114,17 +114,17 @@ data:
         },
         {
           "id": 5,
-          "title": "OOMKilled (last 1h)",
+          "title": "OOM Kill Events (last 1h)",
           "type": "stat",
           "gridPos": { "x": 16, "y": 0, "w": 4, "h": 3 },
           "targets": [{
-            "expr": "count(kube_pod_container_status_last_terminated_reason{reason=\"OOMKilled\", namespace=~\"student-.*\"} == 1) or vector(0)",
+            "expr": "sum(increase(kube_pod_container_status_restarts_total{namespace=~\"student-.*\"}[1h]) * on(namespace,pod,container) group_left() (kube_pod_container_status_last_terminated_reason{reason=\"OOMKilled\",namespace=~\"student-.*\"} == 1)) or vector(0)",
             "legendFormat": ""
           }],
           "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
           "fieldConfig": {
             "defaults": {
-              "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "yellow", "value": 1 }] }
+              "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 5 }] }
             }
           }
         },
@@ -271,14 +271,66 @@ data:
           "fieldConfig": { "defaults": { "unit": "percent", "max": 100 } }
         },
         {
-          "id": 14,
-          "title": "Namespace Health — Pod Ready per Student (1=up, 0=down)",
+          "id": 15,
+          "title": "Memory per Namespace (MiB)",
+          "description": "student-003 spikes, others flat. Cgroup memory limit contains blast to one namespace.",
           "type": "timeseries",
-          "gridPos": { "x": 0, "y": 19, "w": 24, "h": 6 },
+          "gridPos": { "x": 0, "y": 45, "w": 24, "h": 8 },
           "targets": [{
-            "expr": "max by (namespace) (kube_pod_status_ready{namespace=~\"student-.*\", condition=\"true\"})",
+            "expr": "sum by (namespace) (container_memory_working_set_bytes{pod!=\"\", namespace=~\"student-.*\"}) / 1024 / 1024",
             "legendFormat": "{{ namespace }}"
           }],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "custom": { "lineWidth": 2, "fillOpacity": 8 },
+              "color": { "mode": "palette-classic" }
+            }
+          },
+          "options": {
+            "tooltip": { "mode": "multi" },
+            "legend": { "displayMode": "list", "placement": "bottom" }
+          }
+        },
+        {
+          "id": 17,
+          "title": "OOM Kill Events per Namespace — kube-state-metrics",
+          "description": "Red bars = container OOM killed (last termination reason=OOMKilled). Spike only in stressed namespace = isolation proof.",
+          "type": "timeseries",
+          "gridPos": { "x": 0, "y": 53, "w": 24, "h": 6 },
+          "targets": [{
+            "expr": "sum by (namespace) (increase(kube_pod_container_status_restarts_total{namespace=~\"student-.*\"}[2m]) * on(namespace,pod,container) group_left() (kube_pod_container_status_last_terminated_reason{reason=\"OOMKilled\",namespace=~\"student-.*\"} == 1))",
+            "legendFormat": "{{ namespace }}"
+          }],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "custom": { "drawStyle": "bars", "fillOpacity": 80, "lineWidth": 0 },
+              "color": { "mode": "palette-classic" }
+            }
+          },
+          "options": {
+            "tooltip": { "mode": "multi" },
+            "legend": { "displayMode": "list", "placement": "bottom" }
+          }
+        },
+        {
+          "id": 16,
+          "title": "Namespace Health — Pod Ready (isolation proof: 1=healthy, 0=down)",
+          "description": "Shows that while one namespace's pod gets OOM-killed, other namespaces remain Ready=1. Confirms cgroup memory limits are namespace-scoped and do not bleed across tenants.",
+          "type": "timeseries",
+          "gridPos": { "x": 0, "y": 53, "w": 24, "h": 8 },
+          "targets": [
+            {
+              "expr": "max by (namespace) (kube_pod_status_ready{namespace=~\"student-.*\", condition=\"true\"})",
+              "legendFormat": "{{ namespace }} ready"
+            },
+            {
+              "expr": "sum by (namespace) (increase(kube_pod_container_status_restarts_total{namespace=~\"student-.*\"}[2m]) * on(namespace,pod,container) group_left() (kube_pod_container_status_last_terminated_reason{reason=\"OOMKilled\",namespace=~\"student-.*\"} == 1)) > 0",
+              "legendFormat": "{{ namespace }} OOM-kill",
+              "hide": false
+            }
+          ],
           "fieldConfig": {
             "defaults": {
               "unit": "none",
@@ -295,7 +347,18 @@ data:
                 ]
               },
               "color": { "mode": "thresholds" }
-            }
+            },
+            "overrides": [
+              {
+                "matcher": { "id": "byFrameRefID", "options": "B" },
+                "properties": [
+                  { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } },
+                  { "id": "custom.lineWidth", "value": 3 },
+                  { "id": "custom.fillOpacity", "value": 40 },
+                  { "id": "custom.drawStyle", "value": "bars" }
+                ]
+              }
+            ]
           },
           "options": {
             "tooltip": { "mode": "multi" },
@@ -309,7 +372,7 @@ data:
       "title": "Jupyter Platform — Student Drill-Down",
       "uid": "jupyter-student-drill",
       "schemaVersion": 38,
-      "refresh": "30s",
+      "refresh": "1s",
       "time": { "from": "now-1h", "to": "now" },
       "templating": {
         "list": [
@@ -449,17 +512,18 @@ data:
         },
         {
           "id": 8,
-          "title": "OOMKilled",
+          "title": "OOM Kill Events (last 1h)",
+          "description": "Container restarts where last termination reason = OOMKilled. Sourced from kube-state-metrics.",
           "type": "stat",
           "gridPos": { "x": 8, "y": 12, "w": 8, "h": 4 },
           "targets": [{
-            "expr": "count(kube_pod_container_status_last_terminated_reason{reason=\"OOMKilled\", namespace=\"$namespace\"} == 1) or vector(0)",
+            "expr": "sum(increase(kube_pod_container_status_restarts_total{namespace=\"$namespace\"}[1h]) * on(namespace,pod,container) group_left() (kube_pod_container_status_last_terminated_reason{reason=\"OOMKilled\",namespace=\"$namespace\"} == 1)) or vector(0)",
             "legendFormat": ""
           }],
           "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
           "fieldConfig": {
             "defaults": {
-              "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "red", "value": 1 }] }
+              "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 5 }] }
             }
           }
         },
@@ -479,6 +543,58 @@ data:
               "max": 100,
               "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "yellow", "value": 70 }, { "color": "red", "value": 90 }] }
             }
+          }
+        },
+        {
+          "id": 10,
+          "title": "OOM Kill Events Over Time (red bars)",
+          "description": "Each red bar = container restarted with OOMKilled termination reason. Namespace memory limit contains blast — other namespaces unaffected.",
+          "type": "timeseries",
+          "gridPos": { "x": 0, "y": 16, "w": 24, "h": 8 },
+          "targets": [
+            {
+              "expr": "sum(increase(kube_pod_container_status_restarts_total{namespace=\"$namespace\"}[2m]) * on(namespace,pod,container) group_left() (kube_pod_container_status_last_terminated_reason{reason=\"OOMKilled\",namespace=\"$namespace\"} == 1))",
+              "legendFormat": "OOM kill events"
+            },
+            {
+              "expr": "sum(container_memory_working_set_bytes{pod!=\"\", namespace=\"$namespace\"}) / 1024 / 1024",
+              "legendFormat": "memory actual (MiB)"
+            },
+            {
+              "expr": "sum(kube_pod_container_resource_limits{resource=\"memory\", namespace=\"$namespace\"}) / 1024 / 1024",
+              "legendFormat": "memory limit (MiB)"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "custom": { "lineWidth": 2, "fillOpacity": 10 },
+              "color": { "mode": "palette-classic" }
+            },
+            "overrides": [
+              {
+                "matcher": { "id": "byName", "options": "OOM kill events" },
+                "properties": [
+                  { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } },
+                  { "id": "custom.drawStyle", "value": "bars" },
+                  { "id": "custom.fillOpacity", "value": 80 },
+                  { "id": "custom.lineWidth", "value": 0 },
+                  { "id": "custom.axisPlacement", "value": "right" }
+                ]
+              },
+              {
+                "matcher": { "id": "byName", "options": "memory limit (MiB)" },
+                "properties": [
+                  { "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } },
+                  { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [8, 4] } },
+                  { "id": "custom.lineWidth", "value": 2 }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "tooltip": { "mode": "multi" },
+            "legend": { "displayMode": "list", "placement": "bottom" }
           }
         }
       ]

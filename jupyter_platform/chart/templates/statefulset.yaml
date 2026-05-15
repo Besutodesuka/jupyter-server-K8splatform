@@ -60,7 +60,8 @@ spec:
               path: /student/{{ .Values.studentId }}/lab
               port: 8888
             initialDelaySeconds: 90
-            periodSeconds: 15
+            periodSeconds: 10
+            failureThreshold: 2
           volumeMounts:
             - name: workspace
               mountPath: /home/jovyan/work

@@ -9,15 +9,15 @@ dbUrl: postgresql://courseuser:coursepass123@postgres-service.jupyter-experiment
 resources:
   limits:
     cpu: "1"
-    memory: "1Gi"
+    memory: "256Mi"   # low: forces container-level OOMKill for isolation demo
   requests:
     cpu: "250m"
-    memory: "512Mi"
+    memory: "128Mi"
 
 # Namespace-level aggregate quota (independent of per-pod limits above).
 quota:
   requestsCpu: "500m"
-  requestsMemory: "512Mi"
+  requestsMemory: "128Mi"
   storage: "10Gi"
   pods: "5"
 

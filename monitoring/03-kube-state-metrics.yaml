@@ -23,6 +23,7 @@ spec:
           args:
             # Only collect object types relevant to this platform
             - --resources=namespaces,pods,resourcequotas,limitranges,persistentvolumeclaims,statefulsets,deployments,daemonsets
+            - --metric-denylist=kube_pod_init.*
           ports:
             - name: http-metrics
               containerPort: 8080
