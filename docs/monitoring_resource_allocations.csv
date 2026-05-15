@@ -1,0 +1,5 @@
+Component,CPU Request,CPU Limit,Memory Request,Memory Limit
+node-exporter,50m,250m,64Mi,128Mi
+kube-state-metrics,50m,250m,64Mi,256Mi
+Prometheus,200m,1000m,512Mi,1Gi
+Grafana,100m,500m,256Mi,512Mi

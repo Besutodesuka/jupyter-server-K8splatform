@@ -1,0 +1,11 @@
+Metric,Description
+node_cpu_seconds_total,CPU time broken down by mode; idle mode used to derive utilization
+node_memory_MemAvailable_bytes,Available RAM on the node
+node_memory_MemTotal_bytes,Total RAM; ratio = memory pressure
+node_filesystem_avail_bytes,Available disk per mount point
+node_filesystem_size_bytes,Total disk capacity per mount point
+node_network_receive_bytes_total,Inbound bytes per network interface
+node_network_transmit_bytes_total,Outbound bytes per network interface
+node_load1,1-minute load average
+node_load5,5-minute load average
+node_load15,15-minute load average

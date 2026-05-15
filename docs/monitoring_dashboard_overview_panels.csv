@@ -1,0 +1,15 @@
+Panel,Type,Purpose
+Active Students,stat,Count of namespaces with at least one Running pod
+Node CPU %,stat,Whole-machine CPU utilization
+Node RAM %,stat,Whole-machine memory utilization
+Quota Hard Limits Hit,stat,Count of namespaces currently at quota ceiling
+OOMKilled (last 1h),stat,Containers killed by memory limit enforcement
+Orphaned Namespaces,stat,Student namespaces idle for more than 1 hour
+CPU Quota Usage % per Student,timeseries,"Quota ratio trend per namespace (thresholds: 60% yellow, 80% red)"
+Memory Quota Usage % per Student,timeseries,Memory quota ratio trend per namespace
+Namespace Health — Pod Ready per Student,timeseries,"1 = pod ready, 0 = pod down — immediate visibility of down environments"
+Actual CPU per Student (millicores),timeseries,Real CPU consumption from cAdvisor
+Actual Memory per Student (MiB),timeseries,Real memory consumption from cAdvisor
+Top 10 CPU Consumers,table,Namespace + pod ranked by CPU — noisy neighbor detection
+Top 10 Memory Consumers,table,Namespace + pod ranked by memory
+Storage Quota Usage % per Student,bargauge,Horizontal bar gauge of disk consumption per tenant

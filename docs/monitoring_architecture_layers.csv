@@ -1,0 +1,4 @@
+Layer,Source,Granularity
+Node health,node-exporter,Whole machine — CPU / RAM / disk / network
+Per-student usage,cAdvisor via API proxy,Per container/namespace — actual CPU and RAM consumed
+Quota state,kube-state-metrics,Per namespace — quota used vs hard limit

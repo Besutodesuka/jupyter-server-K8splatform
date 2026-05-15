@@ -1,0 +1,5 @@
+Component,Service Type,Internal Port,NodePort
+Prometheus,NodePort,9090,30090
+Grafana,NodePort,3000,30030
+kube-state-metrics,ClusterIP,"8080 (metrics), 8081 (telemetry)",—
+node-exporter,Headless,9100,—

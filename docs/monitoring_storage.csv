@@ -1,0 +1,3 @@
+Component,PVC Name,Capacity,Mount Path,Access Mode
+Prometheus,prometheus-data,10 Gi,/prometheus,ReadWriteOnce
+Grafana,grafana-data,2 Gi,/var/lib/grafana,ReadWriteOnce

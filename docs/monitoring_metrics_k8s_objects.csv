@@ -1,0 +1,12 @@
+Metric,Description
+"kube_resourcequota{type=""hard""}",Hard quota ceiling per namespace (CPU / RAM / storage / pods)
+"kube_resourcequota{type=""used""}",Currently consumed quota per namespace
+kube_limitrange,LimitRange defaults and per-container maximums
+kube_pod_status_phase,Pod lifecycle phase (Running / Pending / Failed)
+kube_pod_status_ready,"Pod readiness (1 = ready, 0 = not ready)"
+kube_pod_container_status_restarts_total,Restart count per container — used for crash loop detection
+kube_pod_container_status_last_terminated_reason,OOMKilled when memory limit was exceeded
+kube_pod_container_resource_requests,Per-container declared resource requests
+kube_pod_container_resource_limits,Per-container declared resource limits
+kube_namespace_created,Namespace creation timestamp — used for orphan detection
+kube_namespace_labels,Namespace label set

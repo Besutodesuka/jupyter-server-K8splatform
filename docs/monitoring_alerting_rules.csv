@@ -1,0 +1,7 @@
+Alert,Trigger Condition,Duration,Severity,Requirement
+TenantCpuQuotaNearLimit,CPU quota ratio > 0.80,5 min sustained,warning,Administrative Oversight
+TenantMemoryQuotaNearLimit,Memory quota ratio > 0.80,5 min sustained,warning,Administrative Oversight
+TenantQuotaHardLimitReached,CPU or memory quota ratio >= 1.0,1 min sustained,critical,Isolation Validation
+ContainerOOMKilled,Container restarted with last termination reason = OOMKilled,immediate,warning,Isolation Validation
+OrphanedStudentNamespace,"Namespace matches student-.*, no Running pods, age > 1h",immediate,info,Lifecycle Management
+NodeMemoryPressure,Node memory utilization > 90%,5 min sustained,critical,Administrative Oversight

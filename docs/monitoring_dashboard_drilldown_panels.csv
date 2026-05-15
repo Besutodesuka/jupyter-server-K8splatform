@@ -1,0 +1,10 @@
+Panel,Type,Purpose
+CPU Actual (millicores),stat,Current CPU snapshot for selected student
+Memory Actual (MiB),stat,Current memory snapshot for selected student
+CPU Quota %,gauge,Distance from hard CPU limit
+Memory Quota %,gauge,Distance from hard memory limit
+CPU Over Time — actual vs request vs limit,timeseries,Trend showing headroom before CPU throttling
+Memory Over Time — actual vs request vs limit,timeseries,Trend showing headroom before OOMKill
+Pod Restarts,stat,Crash loop indicator
+OOMKilled,stat,Whether memory limit has been enforced
+Storage Quota %,gauge,Disk consumption for this student

@@ -1,0 +1,6 @@
+Metric,Description
+container_cpu_usage_seconds_total,Actual CPU consumed per container (rate gives cores/sec)
+container_memory_working_set_bytes,Active memory in use excluding reclaimable cache
+container_memory_rss,Resident set size — the value the OOM killer acts on
+container_fs_reads_bytes_total,Disk read I/O per container
+container_fs_writes_bytes_total,Disk write I/O per container

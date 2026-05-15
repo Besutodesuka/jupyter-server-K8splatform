@@ -1,0 +1,7 @@
+Parameter,Value
+scrape_interval,15s
+evaluation_interval,15s
+external_labels.cluster,jupyter-k8s-platform
+TSDB retention,15 days
+Storage (PVC),10 Gi
+Hot-reload,Enabled via --web.enable-lifecycle

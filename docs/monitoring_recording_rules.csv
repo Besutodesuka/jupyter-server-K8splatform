@@ -1,0 +1,5 @@
+Rule Name,Numerator,Denominator
+namespace:quota_cpu_used_ratio,limits.cpu used,limits.cpu hard
+namespace:quota_memory_used_ratio,limits.memory used,limits.memory hard
+namespace:quota_storage_used_ratio,requests.storage used,requests.storage hard
+namespace:quota_pods_used_ratio,pods used,pods hard
