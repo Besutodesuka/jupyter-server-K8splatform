@@ -57,14 +57,15 @@ data:
 
     # ── Provision via Helm ────────────────────────────────────────────────────
     # helm upgrade --install is idempotent: installs if new, upgrades if exists.
-    # --atomic rolls back automatically on failure.
-    # --create-namespace handles the Namespace object via the chart template.
+    # Do NOT use --create-namespace: chart/templates/namespace.yaml already
+    # creates the namespace with lifecycle labels (platform, expires-at, semester).
+    # Using both causes "namespace already exists" on the second attempt.
     if [[ "$ALREADY_EXISTS" == "false" ]]; then
       helm upgrade --install "$RELEASE" /helm/student-chart \
         --set studentId="${STUDENT_ID}" \
         --set storageClassName="${STORAGE_CLASS:-local-path}" \
         --namespace "${NAMESPACE}" \
-        --create-namespace 1>&2
+        1>&2
     fi
 
     # ── Return HTML response ───────────────────────────────────────────────────
